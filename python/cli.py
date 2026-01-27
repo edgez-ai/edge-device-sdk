@@ -1,12 +1,25 @@
 from __future__ import annotations
 
 import argparse
+import json
 import time
 from datetime import datetime
 from typing import Optional, Sequence
 
-from core import I2CSession, Lwm2mRestClient, RestConfig, pick_client
-from driver import read_ens210, read_sht3x
+from core import (
+    I2C_OBJECT_ID,
+    I2C_RESOURCES,
+    I2CSession,
+    Lwm2mRestClient,
+    RS485_OBJECT_ID,
+    RS485_RESOURCES,
+    RestConfig,
+    UART_OBJECT_ID,
+    UART_RESOURCES,
+    UartSession,
+    pick_client,
+)
+from driver import VC0706Camera, read_ens210, read_sht3x
 
 
 def parse_byte_list(text: str) -> Sequence[int]:
@@ -41,6 +54,25 @@ def build_parser() -> argparse.ArgumentParser:
     p_raw.add_argument("--addr", type=lambda x: int(x, 0), required=True, help="I2C address")
     p_raw.add_argument("--write", type=str, required=True, help="Bytes to write, e.g. 0x22,0x03 or 34,3")
     p_raw.add_argument("--read", type=int, default=0, help="Bytes to read after write")
+
+    p_vc = mode.add_parser("vc0706", help="Control VC0706 UART camera")
+    p_vc.add_argument("--tx-pin", type=int, help="UART TX pin for camera")
+    p_vc.add_argument("--rx-pin", type=int, help="UART RX pin for camera")
+    p_vc.add_argument("--baud", type=int, default=115200, help="UART baudrate")
+    p_vc.add_argument("--rx-size", type=int, default=1024, help="UART RX buffer size")
+    p_vc.add_argument(
+        "--iface",
+        choices=["uart", "i2c", "rs485"],
+        default="uart",
+        help="Interface object to use (uart uses dedicated UART object; i2c uses I2C bridge; rs485 uses RS485 bridge)",
+    )
+    p_vc.add_argument("--chunk-size", type=int, default=64, help="Read size per VC0706 chunk (1-255)")
+    p_vc.add_argument("--action", choices=["capture", "version", "reset"], default="capture")
+    p_vc.add_argument("--output", type=str, default="vc0706.jpg", help="Output path for capture")
+    p_vc.add_argument("--max-bytes", type=int, default=0, help="Max bytes to read if length unknown")
+    p_vc.add_argument("--reset-before", action="store_true", help="Reset camera before action")
+    p_vc.add_argument("--resume", action="store_true", help="Resume video after capture")
+    p_vc.add_argument("--serial", type=int, default=0, help="Camera serial number (default 0)")
 
     return parser
 
@@ -104,6 +136,71 @@ def run_sht3x(args: argparse.Namespace, session: I2CSession, endpoint: str) -> N
         _once()
 
 
+def run_vc0706(args: argparse.Namespace, session: UartSession, endpoint: str) -> None:
+    def emit(payload: dict) -> None:
+        print(json.dumps(payload))
+
+    chunk_size = max(1, min(getattr(args, "chunk_size", 64), 255))
+    try:
+        session.open(
+            baudrate=getattr(args, "baud", 115200),
+            tx_pin=getattr(args, "tx_pin", None),
+            rx_pin=getattr(args, "rx_pin", None),
+            rx_size=getattr(args, "rx_size", 1024),
+        )
+        camera = VC0706Camera(session, serial_num=getattr(args, "serial", 0), timeout_s=getattr(args, "timeout", 0.5))
+
+        if getattr(args, "reset_before", False):
+            camera.reset()
+            time.sleep(0.2)
+
+        action = getattr(args, "action", "capture")
+        if action == "reset":
+            ok = camera.reset()
+            emit({"time": datetime.utcnow().isoformat(), "endpoint": endpoint, "action": "reset", "ok": ok})
+            return
+        if action == "version":
+            version = camera.get_version()
+            emit({"time": datetime.utcnow().isoformat(), "endpoint": endpoint, "action": "version", "version": version})
+            return
+
+        ok = camera.take_picture()
+        length = camera.frame_length() if ok else 0
+        if length == 0:
+            length = max(0, getattr(args, "max_bytes", 0))
+        if length <= 0:
+            emit({"time": datetime.utcnow().isoformat(), "endpoint": endpoint, "action": "capture", "ok": False})
+            return
+
+        data = camera.read_picture(length, chunk_size=chunk_size)
+        with open(getattr(args, "output", "vc0706.jpg"), "wb") as handle:
+            handle.write(data)
+
+        if getattr(args, "resume", False):
+            camera.resume_video()
+
+        emit(
+            {
+                "time": datetime.utcnow().isoformat(),
+                "endpoint": endpoint,
+                "action": "capture",
+                "ok": ok,
+                "bytes": len(data),
+                "output": getattr(args, "output", "vc0706.jpg"),
+            }
+        )
+    except Exception as exc:
+        emit(
+            {
+                "time": datetime.utcnow().isoformat(),
+                "endpoint": endpoint,
+                "action": getattr(args, "action", "capture"),
+                "ok": False,
+                "error": str(exc),
+            }
+        )
+
+
 def main(argv: Optional[Sequence[str]] = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -116,6 +213,33 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         run_raw(args, session, client, endpoint)
     elif args.mode == "sht3x":
         run_sht3x(args, session, endpoint)
+    elif args.mode == "vc0706":
+        iface = getattr(args, "iface", "uart")
+        if iface == "rs485":
+            uart_session = UartSession(
+                client,
+                endpoint,
+                args.instance,
+                object_id=RS485_OBJECT_ID,
+                resources=RS485_RESOURCES,
+            )
+        elif iface == "i2c":
+            uart_session = UartSession(
+                client,
+                endpoint,
+                args.instance,
+                object_id=I2C_OBJECT_ID,
+                resources=I2C_RESOURCES,
+            )
+        else:
+            uart_session = UartSession(
+                client,
+                endpoint,
+                args.instance,
+                object_id=UART_OBJECT_ID,
+                resources=UART_RESOURCES,
+            )
+        run_vc0706(args, uart_session, endpoint)
     else:
         run_ens210(args, session, endpoint)
 

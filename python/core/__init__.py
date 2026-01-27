@@ -6,6 +6,7 @@ from .i2c_client import (
     RestConfig,
     pick_client,
 )
+from .uart_client import RS485_OBJECT_ID, RS485_RESOURCES, UART_OBJECT_ID, UART_RESOURCES, UartSession
 
 __all__ = [
     "I2C_OBJECT_ID",
@@ -14,4 +15,9 @@ __all__ = [
     "Lwm2mRestClient",
     "RestConfig",
     "pick_client",
+    "RS485_OBJECT_ID",
+    "RS485_RESOURCES",
+    "UART_OBJECT_ID",
+    "UART_RESOURCES",
+    "UartSession",
 ]

@@ -99,7 +99,7 @@ export default defineConfig({
     proxy: {
       "/api": {
         // 8080 is the default port for leshan-demo-server if you change it in development phase you need to change this value too.
-        target: "http://192.168.100.1:8088",
+        target: "http://65.20.115.199/12D3KooWRosq3tpcFxbRbKNq96sHQDp1H7mpDV8pCcg6Lgur59by",
         ws: true,
         changeOrigin: true,
       },
