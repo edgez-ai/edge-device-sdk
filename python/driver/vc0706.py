@@ -72,54 +72,82 @@ class VC0706Camera:
             time.sleep(0.02)
 
     def _read_exact(self, n: int, timeout_s: Optional[float] = None, label: str = "", max_retries: int = 3) -> bytes:
-        """Read exactly n bytes with limited retries."""
+        """Read exactly n bytes with limited retries or a time-based timeout."""
         out = bytearray()
         if self._rx_buffer:
             take = min(n, len(self._rx_buffer))
             out += self._rx_buffer[:take]
             del self._rx_buffer[:take]
 
-        retries = 0
-        while len(out) < n and retries < max_retries:
-            time.sleep(0.1)  # Wait for camera to respond
-            chunk = self.session.read()
-            if chunk:
-                if self.debug:
-                    _log(f"RX chunk: {_hex(chunk)}")
-                self._rx_buffer.extend(chunk)
-                take = min(n - len(out), len(self._rx_buffer))
-                out += self._rx_buffer[:take]
-                del self._rx_buffer[:take]
-                retries = 0  # Reset on successful read
-            else:
-                retries += 1
+        if timeout_s is not None:
+            deadline = time.monotonic() + max(0.0, timeout_s)
+            while len(out) < n and time.monotonic() < deadline:
+                chunk = self.session.read()
+                if chunk:
+                    if self.debug:
+                        _log(f"RX chunk: {_hex(chunk)}")
+                    self._rx_buffer.extend(chunk)
+                    take = min(n - len(out), len(self._rx_buffer))
+                    out += self._rx_buffer[:take]
+                    del self._rx_buffer[:take]
+                else:
+                    time.sleep(self.poll_delay_s)
+        else:
+            retries = 0
+            while len(out) < n and retries < max_retries:
+                time.sleep(0.1)  # Wait for camera to respond
+                chunk = self.session.read()
+                if chunk:
+                    if self.debug:
+                        _log(f"RX chunk: {_hex(chunk)}")
+                    self._rx_buffer.extend(chunk)
+                    take = min(n - len(out), len(self._rx_buffer))
+                    out += self._rx_buffer[:take]
+                    del self._rx_buffer[:take]
+                    retries = 0  # Reset on successful read
+                else:
+                    retries += 1
 
         if self.debug:
             _log(f"RX {label or 'exact'}({n}): {_hex(bytes(out))} (got {len(out)})")
         return bytes(out)
 
     def _read_collect(self, max_len: int, timeout_s: Optional[float] = None, label: str = "", max_retries: int = 3) -> bytes:
-        """Read up to max_len bytes with limited retries."""
+        """Read up to max_len bytes with limited retries or a time-based timeout."""
         out = bytearray()
         if self._rx_buffer:
             take = min(max_len, len(self._rx_buffer))
             out += self._rx_buffer[:take]
             del self._rx_buffer[:take]
 
-        retries = 0
-        while len(out) < max_len and retries < max_retries:
-            time.sleep(0.1)  # Wait for camera to respond
-            chunk = self.session.read()
-            if chunk:
-                if self.debug:
-                    _log(f"RX chunk: {_hex(chunk)}")
-                self._rx_buffer.extend(chunk)
-                take = min(max_len - len(out), len(self._rx_buffer))
-                out += self._rx_buffer[:take]
-                del self._rx_buffer[:take]
-                retries = 0  # Reset on successful read
-            else:
-                retries += 1
+        if timeout_s is not None:
+            deadline = time.monotonic() + max(0.0, timeout_s)
+            while len(out) < max_len and time.monotonic() < deadline:
+                chunk = self.session.read()
+                if chunk:
+                    if self.debug:
+                        _log(f"RX chunk: {_hex(chunk)}")
+                    self._rx_buffer.extend(chunk)
+                    take = min(max_len - len(out), len(self._rx_buffer))
+                    out += self._rx_buffer[:take]
+                    del self._rx_buffer[:take]
+                else:
+                    time.sleep(self.poll_delay_s)
+        else:
+            retries = 0
+            while len(out) < max_len and retries < max_retries:
+                time.sleep(0.1)  # Wait for camera to respond
+                chunk = self.session.read()
+                if chunk:
+                    if self.debug:
+                        _log(f"RX chunk: {_hex(chunk)}")
+                    self._rx_buffer.extend(chunk)
+                    take = min(max_len - len(out), len(self._rx_buffer))
+                    out += self._rx_buffer[:take]
+                    del self._rx_buffer[:take]
+                    retries = 0  # Reset on successful read
+                else:
+                    retries += 1
 
         if self.debug:
             _log(f"RX {label or 'collect'}({max_len}): {_hex(bytes(out))} (got {len(out)})")
@@ -205,66 +233,85 @@ class VC0706Camera:
         _log(f"frame_length() = {length}")
         return length
 
-    def read_picture_chunk(self, size: int) -> bytes:
+    def read_picture_chunk(self, size: int, *, retries: int = 0, retry_delay_s: float = 0.5) -> bytes:
         """Read a chunk of the captured image data."""
         if size <= 0:
             return b""
         size = min(size, 512)
-        _log(f">>> read_picture_chunk({size}) at ptr={self._frame_ptr}")
-        
-        # Reset RX buffer before each chunk to prevent buffer overflow
-        self.session.reset_cursor()
-        self._rx_buffer.clear()
-        
-        # Build read command matching C code format
-        args = bytes(
-            [
-                0x0C,  # FBUF type
-                0x00,  # Control mode
-                0x0A,  # Delay (10ms between packets)
-                (self._frame_ptr >> 24) & 0xFF,
-                (self._frame_ptr >> 16) & 0xFF,
-                (self._frame_ptr >> 8) & 0xFF,
-                self._frame_ptr & 0xFF,
-                (size >> 24) & 0xFF,
-                (size >> 16) & 0xFF,
-                (size >> 8) & 0xFF,
-                size & 0xFF,
-                0x00,  # Delay high
-                0x0A,  # Delay low (10 * 0.01ms = 0.1ms) - matching C code
-            ]
-        )
-        self._send_command(VC0706_READ_FBUF, args, label=f"READ_CHUNK@{self._frame_ptr}")
-        time.sleep(0.05)
+        retries = max(0, retries)
+        retry_delay_s = max(0.0, retry_delay_s)
 
-        # Read ACK header (5 bytes)
-        ack = self._read_exact(5, timeout_s=1.0, label="READ_ACK")
-        if not self._verify_response(ack, VC0706_READ_FBUF, label="READ_ACK"):
-            _log(f"read_picture_chunk: ACK failed")
-            return b""
+        for attempt in range(retries + 1):
+            _log(f">>> read_picture_chunk({size}) at ptr={self._frame_ptr}")
 
-        # Read actual image data
-        data = self._read_exact(size, timeout_s=2.0, label="READ_DATA")
-        if len(data) != size:
-            _log(f"read_picture_chunk: got {len(data)} bytes, expected {size}")
-            return b""
+            # Reset RX buffer before each chunk to prevent buffer overflow
+            self.session.reset_cursor()
+            self._rx_buffer.clear()
 
-        # Read trailing ACK (5 bytes)
-        tail = self._read_exact(5, timeout_s=0.5, label="READ_TAIL")
-        if not self._verify_response(tail, VC0706_READ_FBUF, label="READ_TAIL"):
-            _log(f"read_picture_chunk: tail ACK failed")
-            return b""
-        
-        self._frame_ptr += len(data)
-        _log(f"read_picture_chunk: OK, new ptr={self._frame_ptr}")
-        return data
+            # Build read command matching C code format
+            args = bytes(
+                [
+                    0x0C,  # FBUF type
+                    0x00,  # Control mode
+                    0x0A,  # Delay (10ms between packets)
+                    (self._frame_ptr >> 24) & 0xFF,
+                    (self._frame_ptr >> 16) & 0xFF,
+                    (self._frame_ptr >> 8) & 0xFF,
+                    self._frame_ptr & 0xFF,
+                    (size >> 24) & 0xFF,
+                    (size >> 16) & 0xFF,
+                    (size >> 8) & 0xFF,
+                    size & 0xFF,
+                    0x00,  # Delay high
+                    0x0A,  # Delay low (10 * 0.01ms = 0.1ms) - matching C code
+                ]
+            )
+            self._send_command(VC0706_READ_FBUF, args, label=f"READ_CHUNK@{self._frame_ptr}")
+            time.sleep(0.05)
 
-    def read_picture(self, total_len: int, chunk_size: int = 64) -> bytes:
+            # Read ACK header (5 bytes)
+            ack = self._read_exact(5, timeout_s=1.0, label="READ_ACK")
+            if not self._verify_response(ack, VC0706_READ_FBUF, label="READ_ACK"):
+                _log("read_picture_chunk: ACK failed")
+                if attempt < retries:
+                    time.sleep(retry_delay_s * (2**attempt))
+                    continue
+                return b""
+
+            # Read actual image data
+            data = self._read_exact(size, timeout_s=2.0, label="READ_DATA")
+            if len(data) != size:
+                _log(f"read_picture_chunk: got {len(data)} bytes, expected {size}")
+                if attempt < retries:
+                    time.sleep(retry_delay_s * (2**attempt))
+                    continue
+                return b""
+
+            # Read trailing ACK (5 bytes)
+            tail = self._read_exact(5, timeout_s=0.5, label="READ_TAIL")
+            if not self._verify_response(tail, VC0706_READ_FBUF, label="READ_TAIL"):
+                _log("read_picture_chunk: tail ACK failed")
+                if attempt < retries:
+                    time.sleep(retry_delay_s * (2**attempt))
+                    continue
+                return b""
+
+            self._frame_ptr += len(data)
+            _log(f"read_picture_chunk: OK, new ptr={self._frame_ptr}")
+            return data
+
+        return b""
+
+    def read_picture(self, total_len: int, chunk_size: int = 64, *, chunk_retries: int = 0, retry_delay_s: float = 0.5) -> bytes:
         chunk_size = max(1, min(chunk_size, 512))
         data = bytearray()
         while len(data) < total_len:
             remaining = total_len - len(data)
-            chunk = self.read_picture_chunk(min(chunk_size, remaining))
+            chunk = self.read_picture_chunk(
+                min(chunk_size, remaining),
+                retries=chunk_retries,
+                retry_delay_s=retry_delay_s,
+            )
             if not chunk:
                 break
             data.extend(chunk)

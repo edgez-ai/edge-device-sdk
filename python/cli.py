@@ -73,6 +73,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_vc.add_argument("--reset-before", action="store_true", help="Reset camera before action")
     p_vc.add_argument("--resume", action="store_true", help="Resume video after capture")
     p_vc.add_argument("--serial", type=int, default=0, help="Camera serial number (default 0)")
+    p_vc.add_argument("--retries", type=int, default=0, help="Number of retries per chunk read")
+    p_vc.add_argument("--retry-delay", type=float, default=0.5, help="Delay between chunk retries in seconds")
 
     return parser
 
@@ -141,6 +143,9 @@ def run_vc0706(args: argparse.Namespace, session: UartSession, endpoint: str) ->
         print(json.dumps(payload))
 
     chunk_size = max(1, min(getattr(args, "chunk_size", 64), 255))
+    retries = max(0, getattr(args, "retries", 0))
+    retry_delay = max(0.0, getattr(args, "retry_delay", 0.5))
+
     try:
         session.open(
             baudrate=getattr(args, "baud", 115200),
@@ -172,7 +177,7 @@ def run_vc0706(args: argparse.Namespace, session: UartSession, endpoint: str) ->
             emit({"time": datetime.utcnow().isoformat(), "endpoint": endpoint, "action": "capture", "ok": False})
             return
 
-        data = camera.read_picture(length, chunk_size=chunk_size)
+        data = camera.read_picture(length, chunk_size=chunk_size, chunk_retries=retries, retry_delay_s=retry_delay)
         with open(getattr(args, "output", "vc0706.jpg"), "wb") as handle:
             handle.write(data)
 
