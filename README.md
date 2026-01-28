@@ -29,3 +29,15 @@ print(readings)
 ## License
 - The `web-ui` package is licensed under the Eclipse Public License 2.0 (EPL-2.0).
 - All other parts of the repository are licensed under the Apache License 2.0.
+
+
+python3 cli.py --base-url http://192.168.10.177:8088 --client B43A45A45A08 vc0706 \
+  --iface uart --tx-pin 20 --rx-pin 19 --baud 38400 \
+  --action capture --output vc0706.jpg --chunk-size 255 --reset-before --resume --retries 3 --retry-delay 1.0
+
+
+  python3 cli.py --base-url http://192.168.10.177:8088 --client B43A45A45A08 vc0706 \
+  --iface uart --action capture --output vc0706.jpg --chunk-size 255 --resume --retries 3 --retry-delay 1.0
+
+
+  python3 cli.py --base-url http://192.168.10.177:8088 --client B43A45A45A08 --timeout 15 flow --iface rs485 --tx-pin 16 --rx-pin 15 --baud 9600 --unit-id 1 --address 0 --count 4 --poll-interval 1.0

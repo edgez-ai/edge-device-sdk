@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Sequence
 
 from core import (
@@ -19,12 +19,14 @@ from core import (
     UartSession,
     pick_client,
 )
-from driver import VC0706Camera, read_ens210, read_sht3x
+from driver import FlowMeter, FlowMeterConfig, VC0706Camera, read_ens210, read_sht3x
 
 
 def parse_byte_list(text: str) -> Sequence[int]:
     parts = [p.strip() for p in text.split(",") if p.strip()]
     return [int(part, 0) for part in parts]
+
+
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -76,6 +78,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_vc.add_argument("--retries", type=int, default=0, help="Number of retries per chunk read")
     p_vc.add_argument("--retry-delay", type=float, default=0.5, help="Delay between chunk retries in seconds")
 
+    p_flow = mode.add_parser("flow", help="Read flow/volume via Modbus over RS485")
+    p_flow.add_argument(
+        "--iface",
+        choices=["rs485", "uart"],
+        default="rs485",
+        help="Interface object to use (rs485 uses RS485 object; uart uses UART object)",
+    )
+    p_flow.add_argument("--tx-pin", type=int, help="RS485 TX pin")
+    p_flow.add_argument("--rx-pin", type=int, help="RS485 RX pin")
+    p_flow.add_argument("--baud", type=int, default=9600, help="RS485 baudrate")
+    p_flow.add_argument("--rx-size", type=int, default=256, help="RS485 RX buffer size")
+    p_flow.add_argument("--unit-id", type=int, default=1, help="Modbus unit id")
+    p_flow.add_argument("--address", type=int, default=0, help="Holding register address")
+    p_flow.add_argument("--count", type=int, default=4, help="Number of holding registers")
+    p_flow.add_argument("--flow-scale", type=float, default=100000.0, help="Flow rate scale")
+    p_flow.add_argument("--volume-scale", type=float, default=10000.0, help="Total volume scale")
+    p_flow.add_argument("--poll-interval", type=float, default=1.0, help="Poll interval seconds")
+    p_flow.add_argument("--count-limit", type=int, default=0, help="Number of samples; 0 for forever")
+    p_flow.add_argument("--modbus-timeout", type=float, default=1.0, help="Modbus read timeout seconds")
+    p_flow.add_argument("--rs485-mode", type=int, default=0, help="RS485 mode value (device-specific)")
+
     return parser
 
 
@@ -88,7 +111,7 @@ def run_raw(args: argparse.Namespace, session: I2CSession, client: Lwm2mRestClie
     data = b""
     if args.read > 0:
         data = session.read()[: args.read]
-    print({"time": datetime.utcnow().isoformat(), "endpoint": endpoint, "raw_read_hex": data.hex(), "raw_read_len": len(data)})
+    print({"time": datetime.now(timezone.utc).isoformat(), "endpoint": endpoint, "raw_read_hex": data.hex(), "raw_read_len": len(data)})
 
 
 def run_ens210(args: argparse.Namespace, session: I2CSession, endpoint: str) -> None:
@@ -100,7 +123,7 @@ def run_ens210(args: argparse.Namespace, session: I2CSession, endpoint: str) -> 
 
     def _once() -> None:
         result = read_ens210(session, delay_s=delay)
-        print({"time": datetime.utcnow().isoformat(), "endpoint": endpoint, **result})
+        print({"time": datetime.now(timezone.utc).isoformat(), "endpoint": endpoint, **result})
 
     if interval > 0:
         iterations = 0
@@ -124,7 +147,7 @@ def run_sht3x(args: argparse.Namespace, session: I2CSession, endpoint: str) -> N
 
     def _once() -> None:
         result = read_sht3x(session, repeatability=repeatability, delay_s=delay)
-        print({"time": datetime.utcnow().isoformat(), "endpoint": endpoint, **result})
+        print({"time": datetime.now(timezone.utc).isoformat(), "endpoint": endpoint, **result})
 
     if interval > 0:
         iterations = 0
@@ -162,11 +185,11 @@ def run_vc0706(args: argparse.Namespace, session: UartSession, endpoint: str) ->
         action = getattr(args, "action", "capture")
         if action == "reset":
             ok = camera.reset()
-            emit({"time": datetime.utcnow().isoformat(), "endpoint": endpoint, "action": "reset", "ok": ok})
+            emit({"time": datetime.now(timezone.utc).isoformat(), "endpoint": endpoint, "action": "reset", "ok": ok})
             return
         if action == "version":
             version = camera.get_version()
-            emit({"time": datetime.utcnow().isoformat(), "endpoint": endpoint, "action": "version", "version": version})
+            emit({"time": datetime.now(timezone.utc).isoformat(), "endpoint": endpoint, "action": "version", "version": version})
             return
 
         ok = camera.take_picture()
@@ -174,7 +197,7 @@ def run_vc0706(args: argparse.Namespace, session: UartSession, endpoint: str) ->
         if length == 0:
             length = max(0, getattr(args, "max_bytes", 0))
         if length <= 0:
-            emit({"time": datetime.utcnow().isoformat(), "endpoint": endpoint, "action": "capture", "ok": False})
+            emit({"time": datetime.now(timezone.utc).isoformat(), "endpoint": endpoint, "action": "capture", "ok": False})
             return
 
         data = camera.read_picture(length, chunk_size=chunk_size, chunk_retries=retries, retry_delay_s=retry_delay)
@@ -186,7 +209,7 @@ def run_vc0706(args: argparse.Namespace, session: UartSession, endpoint: str) ->
 
         emit(
             {
-                "time": datetime.utcnow().isoformat(),
+                "time": datetime.now(timezone.utc).isoformat(),
                 "endpoint": endpoint,
                 "action": "capture",
                 "ok": ok,
@@ -197,7 +220,7 @@ def run_vc0706(args: argparse.Namespace, session: UartSession, endpoint: str) ->
     except Exception as exc:
         emit(
             {
-                "time": datetime.utcnow().isoformat(),
+                "time": datetime.now(timezone.utc).isoformat(),
                 "endpoint": endpoint,
                 "action": getattr(args, "action", "capture"),
                 "ok": False,
@@ -206,9 +229,65 @@ def run_vc0706(args: argparse.Namespace, session: UartSession, endpoint: str) ->
         )
 
 
+def run_flow(args: argparse.Namespace, session: UartSession, endpoint: str) -> None:
+    def emit(payload: dict) -> None:
+        print(json.dumps(payload))
+
+    session.open(
+        baudrate=getattr(args, "baud", 9600),
+        tx_pin=getattr(args, "tx_pin", None),
+        rx_pin=getattr(args, "rx_pin", None),
+        rx_size=getattr(args, "rx_size", 256),
+        modbus_unit_id=getattr(args, "unit_id", 1),
+        mode=getattr(args, "rs485_mode", 0),
+    )
+
+    interval = max(0.0, getattr(args, "poll_interval", 1.0))
+    count_limit = max(0, getattr(args, "count_limit", 0))
+    iterations = 0
+
+    meter = FlowMeter(
+        session,
+        FlowMeterConfig(
+            unit_id=getattr(args, "unit_id", 1),
+            register_address=getattr(args, "address", 0),
+            register_count=getattr(args, "count", 4),
+            flow_scale=getattr(args, "flow_scale", 100000.0),
+            volume_scale=getattr(args, "volume_scale", 10000.0),
+            timeout_s=getattr(args, "modbus_timeout", 1.0),
+        ),
+    )
+
+    while True:
+        result = meter.read_flow_and_total_volume()
+        if result is None:
+            emit({"time": datetime.now(timezone.utc).isoformat(), "endpoint": endpoint, "ok": False, "error": "modbus timeout"})
+        else:
+            flow_rate, total_volume = result
+            emit(
+                {
+                    "time": datetime.now(timezone.utc).isoformat(),
+                    "endpoint": endpoint,
+                    "ok": True,
+                    "flow_rate": flow_rate,
+                    "total_volume": total_volume,
+                }
+            )
+
+        iterations += 1
+        if count_limit > 0 and iterations >= count_limit:
+            break
+        if interval <= 0:
+            break
+        time.sleep(interval)
+
+
 def main(argv: Optional[Sequence[str]] = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if not getattr(args, "mode", None):
+        parser.print_help()
+        return
     config = RestConfig(base_url=args.base_url, timeout=args.timeout)
     client = Lwm2mRestClient(config)
     endpoint = pick_client(client, args.client)
@@ -245,6 +324,25 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 resources=UART_RESOURCES,
             )
         run_vc0706(args, uart_session, endpoint)
+    elif args.mode == "flow":
+        iface = getattr(args, "iface", "rs485")
+        if iface == "uart":
+            uart_session = UartSession(
+                client,
+                endpoint,
+                args.instance,
+                object_id=UART_OBJECT_ID,
+                resources=UART_RESOURCES,
+            )
+        else:
+            uart_session = UartSession(
+                client,
+                endpoint,
+                args.instance,
+                object_id=RS485_OBJECT_ID,
+                resources=RS485_RESOURCES,
+            )
+        run_flow(args, uart_session, endpoint)
     else:
         run_ens210(args, session, endpoint)
 
