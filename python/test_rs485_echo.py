@@ -17,6 +17,7 @@ import argparse
 import sys
 import time
 import threading
+from typing import Optional
 from datetime import datetime, timezone
 
 # REST API imports
@@ -24,8 +25,84 @@ from core import Lwm2mRestClient, RestConfig
 from core.uart_client import RS485_OBJECT_ID, RS485_RESOURCES, UartSession
 
 
+# LwM2M Log Object (from object_log.h)
+LOG_OBJECT_ID = 10260
+RES_LOG_LINES = 0
+RES_LOG_CLEAR = 1
+RES_LOG_DROPPED = 2
+RES_LOG_PENDING = 3
+
+
 # Global state
 stop_event = threading.Event()
+
+
+class DeviceLogPoller:
+    """Polls device logs from the LwM2M log object and displays them."""
+
+    def __init__(
+        self,
+        client: Lwm2mRestClient,
+        endpoint: str,
+        instance: int = 0,
+        poll_interval: float = 0.5,
+    ):
+        self.client = client
+        self.endpoint = endpoint
+        self.instance = instance
+        self.poll_interval = poll_interval
+        self._running = False
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> None:
+        """Start the log polling thread."""
+        if self._running:
+            return
+        self._running = True
+        self._thread = threading.Thread(target=self._poll_loop, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        """Stop the log polling thread."""
+        self._running = False
+        if self._thread:
+            self._thread.join(timeout=2.0)
+            self._thread = None
+
+    def _poll_loop(self) -> None:
+        """Background thread that polls for logs."""
+        while self._running:
+            try:
+                self._fetch_and_print_logs()
+            except Exception:
+                pass  # Ignore errors in background thread
+            time.sleep(self.poll_interval)
+
+    def _fetch_and_print_logs(self) -> None:
+        """Fetch logs from device and print them."""
+        try:
+            data = self.client.read_resource(
+                self.endpoint, LOG_OBJECT_ID, self.instance, RES_LOG_LINES
+            )
+            if data:
+                log_text = None
+                if isinstance(data, bytes):
+                    log_text = data.decode("utf-8", errors="replace")
+                elif isinstance(data, str):
+                    log_text = data
+                elif isinstance(data, dict):
+                    log_text = data.get("value") or data.get("vd") or str(data)
+
+                if log_text and log_text.strip():
+                    for line in log_text.strip().split("\n"):
+                        if line.strip():
+                            print(f"\033[36m[ESP32] {line}\033[0m", flush=True)
+        except Exception:
+            pass  # Silently ignore errors
+
+    def fetch_once(self) -> None:
+        """Fetch and print logs once (blocking)."""
+        self._fetch_and_print_logs()
 
 
 def format_hex(data: bytes) -> str:
@@ -38,20 +115,12 @@ def format_text(data: bytes) -> str:
     return "".join(chr(b) if 0x20 <= b < 0x7F else "." for b in data)
 
 
-def create_rs485_session(args: argparse.Namespace) -> UartSession:
+def create_rs485_session(
+    client: Lwm2mRestClient,
+    endpoint: str,
+    args: argparse.Namespace,
+) -> UartSession:
     """Create and open an RS485 session via REST API."""
-    config = RestConfig(base_url=args.base_url, timeout=args.timeout)
-    client = Lwm2mRestClient(config)
-    
-    # Pick endpoint
-    endpoint = args.client
-    if not endpoint:
-        endpoints = client.endpoints()
-        if not endpoints:
-            raise RuntimeError("No endpoints available")
-        endpoint = endpoints[0]
-        print(f"Auto-selected endpoint: {endpoint}")
-    
     # Create UART session for RS485
     session = UartSession(
         client,
@@ -80,6 +149,18 @@ def create_rs485_session(args: argparse.Namespace) -> UartSession:
     
     print("RS485 interface opened successfully!")
     return session
+
+
+def resolve_endpoint(client: Lwm2mRestClient, args: argparse.Namespace) -> str:
+    """Resolve endpoint from args or auto-select the first available."""
+    endpoint = args.client
+    if not endpoint:
+        endpoints = client.endpoints()
+        if not endpoints:
+            raise RuntimeError("No endpoints available")
+        endpoint = endpoints[0]
+        print(f"Auto-selected endpoint: {endpoint}")
+    return endpoint
 
 
 def echo_test_loop(session: UartSession, args: argparse.Namespace) -> None:
@@ -125,8 +206,8 @@ def echo_test_loop(session: UartSession, args: argparse.Namespace) -> None:
                 print(f"  Hex:  [ {format_hex(data)} ]")
                 print(f"  Text: \"{format_text(data)}\"")
                 
-                # Echo back if enabled
-                if args.echo:
+                # Echo back if enabled (only for data longer than 1 char)
+                if args.echo and len(data) > 1:
                     try:
                         # Send prefix + data + suffix like rs485_example.c
                         echo_msg = b"\r\nRS485 Received: [" + data + b"]\r\n"
@@ -178,6 +259,8 @@ def interactive_mode(session: UartSession, args: argparse.Namespace) -> None:
     )
     reader_thread.start()
     
+    session = None
+
     try:
         while not stop_event.is_set():
             try:
@@ -232,6 +315,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--debug",
         action="store_true",
         help="Enable debug output"
+    )
+    parser.add_argument(
+        "--no-logs",
+        action="store_true",
+        help="Disable device log polling"
+    )
+    parser.add_argument(
+        "--log-interval",
+        type=float,
+        default=0.3,
+        help="Device log poll interval in seconds (default: 0.3)"
     )
     
     # RS485/UART configuration - defaults match modbus example
@@ -324,13 +418,43 @@ def main() -> None:
     print("=" * 60)
     print()
     
+    # Create REST client and resolve endpoint
+    config = RestConfig(base_url=args.base_url, timeout=args.timeout)
+    client = Lwm2mRestClient(config)
+
     try:
-        session = create_rs485_session(args)
+        endpoint = resolve_endpoint(client, args)
+    except Exception as e:
+        print(f"Failed to resolve endpoint: {e}")
+        if args.debug:
+            import traceback
+            traceback.print_exc()
+        sys.exit(1)
+
+    # Create device log poller
+    log_poller = None
+    if not args.no_logs:
+        log_poller = DeviceLogPoller(
+            client=client,
+            endpoint=endpoint,
+            poll_interval=args.log_interval,
+        )
+
+    try:
+        # Start log polling (optional)
+        if log_poller:
+            print("Starting device log polling...")
+            log_poller.start()
+            time.sleep(0.2)
+
+        session = create_rs485_session(client, endpoint, args)
     except Exception as e:
         print(f"Failed to create RS485 session: {e}")
         if args.debug:
             import traceback
             traceback.print_exc()
+        if log_poller:
+            log_poller.stop()
         sys.exit(1)
     
     try:
@@ -342,11 +466,14 @@ def main() -> None:
         print("\nStopping...")
         stop_event.set()
     finally:
+        if log_poller:
+            log_poller.stop()
         print("Closing RS485 session...")
-        try:
-            session.close()
-        except Exception:
-            pass
+        if session is not None:
+            try:
+                session.close()
+            except Exception:
+                pass
         print("Done.")
 
 
