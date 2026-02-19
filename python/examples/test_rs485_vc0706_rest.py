@@ -17,9 +17,15 @@ import argparse
 import sys
 import time
 import threading
+from pathlib import Path
 from typing import Optional
 
-from core.i2c_client import Lwm2mRestClient, RestConfig
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core import Lwm2mRestClient, RestConfig
 from core.uart_client import UartSession, RS485_RESOURCES
 
 
@@ -116,6 +122,10 @@ class VC0706RestCamera:
     # Frame buffer control types
     FBUF_STOP_FRAME = 0x00
     FBUF_RESUME_FRAME = 0x02
+
+    # Capture limits
+    READ_CHUNK_SIZE = 256
+    MAX_FRAME_SIZE = 500000
     
     def __init__(
         self,
@@ -237,7 +247,7 @@ class VC0706RestCamera:
         """
         data = b''
         start_time = time.time()
-        poll_interval = 0.05  # Poll every 50ms (similar to 10ms in direct serial)
+        poll_interval = 0.05
         no_data_count = 0
         
         self._log(f"Polling for response (timeout={timeout}s, max_len={max_len})...")
@@ -251,7 +261,7 @@ class VC0706RestCamera:
             else:
                 no_data_count += 1
                 # If we have some data and haven't received anything for a while, we might be done
-                if data and no_data_count >= 10:  # 10 * 50ms = 500ms of no data
+                if data and no_data_count >= 30:  # 30 * 50ms = 1.5s of no data
                     self._log(f"  No more data after {no_data_count} polls, stopping")
                     break
                 time.sleep(poll_interval)
@@ -348,6 +358,139 @@ class VC0706RestCamera:
             print("No response from camera")
         
         return None
+
+    def stop_frame(self) -> bool:
+        self._log("Stopping frame...")
+        if not self._send_command(self.CMD_FBUF_CTRL, bytes([self.FBUF_STOP_FRAME]), label="STOP_FRAME"):
+            return False
+
+        response = self._read_response(timeout=2.0, max_len=64)
+        if len(response) >= 5 and self._verify_response(response, self.CMD_FBUF_CTRL):
+            self._log("Frame stopped")
+            return True
+
+        return len(response) > 0
+
+    def resume_frame(self) -> bool:
+        self._log("Resuming frame capture...")
+        if not self._send_command(self.CMD_FBUF_CTRL, bytes([self.FBUF_RESUME_FRAME]), label="RESUME_FRAME"):
+            return False
+
+        response = self._read_response(timeout=1.0, max_len=64)
+        if len(response) >= 5 and self._verify_response(response, self.CMD_FBUF_CTRL):
+            self._log("Frame resumed")
+            return True
+
+        return len(response) > 0
+
+    def get_frame_buffer_length(self) -> int:
+        self._log("Getting frame buffer length...")
+
+        if not self._send_command(self.CMD_GET_FBUF_LEN, bytes([0x00]), label="GET_FBUF_LEN"):
+            return 0
+
+        response = self._read_response(timeout=2.0, max_len=64)
+        if len(response) >= 9 and self._verify_response(response, self.CMD_GET_FBUF_LEN):
+            length = (response[5] << 24) | (response[6] << 16) | (response[7] << 8) | response[8]
+            self._log(f"Frame buffer length: {length} bytes")
+            return length
+
+        return 0
+
+    def read_frame_buffer(self, length: int, max_retries: int = 3) -> Optional[bytes]:
+        if length <= 0 or length > self.MAX_FRAME_SIZE:
+            self._log(f"Invalid frame length: {length}")
+            return None
+
+        image = bytearray()
+        offset = 0
+
+        while offset < length:
+            chunk_size = min(self.READ_CHUNK_SIZE, length - offset)
+            args = bytes([
+                0x00, 0x0A,
+                (offset >> 24) & 0xFF,
+                (offset >> 16) & 0xFF,
+                (offset >> 8) & 0xFF,
+                offset & 0xFF,
+                (chunk_size >> 24) & 0xFF,
+                (chunk_size >> 16) & 0xFF,
+                (chunk_size >> 8) & 0xFF,
+                chunk_size & 0xFF,
+                0x00,
+                0xFF,
+            ])
+
+            response = b""
+            for attempt in range(1, max_retries + 1):
+                if not self._send_command(self.CMD_READ_FBUF, args, label=f"READ_FBUF@{offset}#{attempt}"):
+                    continue
+                response = self._read_response(timeout=4.0, max_len=chunk_size + 32)
+                if len(response) >= (5 + chunk_size) and self._verify_response(response, self.CMD_READ_FBUF):
+                    break
+                self._log(
+                    f"Retry chunk offset {offset} attempt {attempt}/{max_retries}, got {len(response)} bytes"
+                )
+                time.sleep(0.1)
+
+            if len(response) < 10:
+                self._log(f"Short response at offset {offset}: {len(response)} bytes")
+                return None
+
+            if not self._verify_response(response, self.CMD_READ_FBUF):
+                self._log(f"Invalid read-fbuf header at offset {offset}: {response[:8].hex()}")
+                return None
+
+            payload_start = 5
+            payload_end = payload_start + chunk_size
+            if len(response) < payload_end:
+                self._log(
+                    f"Chunk too short at offset {offset}: got {len(response) - payload_start}, need {chunk_size}"
+                )
+                return None
+
+            image.extend(response[payload_start:payload_end])
+            offset += chunk_size
+
+            progress = (offset * 100) // length
+            print(f"\rRead progress: {progress}% ({offset}/{length})", end="", flush=True)
+
+        print()
+        return bytes(image)
+
+    def capture_image(self, max_retries: int = 3) -> Optional[bytes]:
+        if not self.stop_frame():
+            self._log("Failed to stop frame")
+            return None
+
+        time.sleep(0.4)
+
+        frame_len = 0
+        for _ in range(max_retries):
+            self.drain_buffer(0.1)
+            frame_len = self.get_frame_buffer_length()
+            if frame_len > 0:
+                break
+            time.sleep(0.5)
+
+        if frame_len <= 0:
+            self._log("Failed to get frame length")
+            self.resume_frame()
+            return None
+
+        data = self.read_frame_buffer(frame_len)
+        self.resume_frame()
+        return data
+
+    def save_image(self, data: bytes, filename: str) -> bool:
+        try:
+            with open(filename, "wb") as fp:
+                fp.write(data)
+            print(f"Saved image: {filename} ({len(data)} bytes)")
+            return True
+        except OSError as exc:
+            print(f"Failed to save image {filename}: {exc}")
+            return False
     
     def reset(self) -> bool:
         """
@@ -417,9 +560,20 @@ def main():
         help="RX pin number (optional)"
     )
     parser.add_argument(
+        "--action",
+        choices=["version", "capture"],
+        default="capture",
+        help="Action to run (default: capture)"
+    )
+    parser.add_argument(
+        "--output", "-o",
+        default="capture.jpg",
+        help="Output file for --action capture (default: capture.jpg)"
+    )
+    parser.add_argument(
         "--reset",
         action="store_true",
-        help="Reset camera before getting version"
+        help="Reset camera before action"
     )
     parser.add_argument(
         "--quiet", "-q",
@@ -484,20 +638,36 @@ def main():
             camera.reset()
             time.sleep(2.0)
         
-        # Get version
-        print("\n--- Getting Camera Version ---")
-        version = camera.get_version()
+        ok = False
+        if args.action == "version":
+            print("\n--- Getting Camera Version ---")
+            version = camera.get_version()
+            ok = bool(version)
+        else:
+            if log_poller:
+                print("Pausing device log polling for image transfer...")
+                log_poller.stop()
+                log_poller = None
+            print("\n--- Capturing Image ---")
+            image = camera.capture_image()
+            ok = bool(image) and camera.save_image(image, args.output)
         
         # Fetch any remaining logs
         if log_poller:
             time.sleep(0.5)
             log_poller.fetch_once()
         
-        if version:
-            print(f"\n✓ Camera version retrieved successfully")
+        if ok:
+            if args.action == "version":
+                print("\n✓ Camera version retrieved successfully")
+            else:
+                print("\n✓ Camera image captured successfully")
             return 0
         else:
-            print(f"\n✗ Failed to get camera version")
+            if args.action == "version":
+                print("\n✗ Failed to get camera version")
+            else:
+                print("\n✗ Failed to capture camera image")
             return 1
             
     except KeyboardInterrupt:

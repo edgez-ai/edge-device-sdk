@@ -259,6 +259,17 @@ class UartSession:
         except requests.RequestException:
             return b""
         result = _extract_bytes_payload(self.client, data)
+        if not result:
+            try:
+                fallback = self.client.read_resource(
+                    self.endpoint,
+                    self.object_id,
+                    self.instance,
+                    self.resources["rx_chunk"],
+                )
+                result = _extract_bytes_payload(self.client, fallback)
+            except requests.RequestException:
+                return b""
         if self.debug and result:
             self._log(f"READ rx_chunk: {result.hex()}")
         return result
