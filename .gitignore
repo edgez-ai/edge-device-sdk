@@ -1,2 +1,3 @@
 web-ui/node_modules
 *.pyc
+python/examples/sht3x_history.jsonl

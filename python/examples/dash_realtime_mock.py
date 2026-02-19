@@ -40,8 +40,8 @@ from driver import VC0706Camera, read_sht3x
 
 WINDOW_SECONDS = 6 * 60 * 60
 UI_UPDATE_MS = 1000
-SHT3X_INTERVAL_S = 60.0
-CAMERA_INTERVAL_S = 1.5
+SHT3X_INTERVAL_S = 15.0
+CAMERA_INTERVAL_S = 0.0
 MAX_POINTS = int(WINDOW_SECONDS / SHT3X_INTERVAL_S) + 1
 BACKGROUND_BAND_SECONDS = 5
 SHT3X_HISTORY_FILE = Path(__file__).with_name("sht3x_history.jsonl")
@@ -51,8 +51,8 @@ class SharedState:
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.timestamps: deque[datetime] = deque(maxlen=MAX_POINTS)
-        self.temperatures: deque[float] = deque(maxlen=MAX_POINTS)
-        self.humidities: deque[float] = deque(maxlen=MAX_POINTS)
+        self.temperatures: deque[float | None] = deque(maxlen=MAX_POINTS)
+        self.humidities: deque[float | None] = deque(maxlen=MAX_POINTS)
         self.latest_camera_jpeg: bytes | None = None
         self.latest_camera_ts: str = "0"
 
@@ -81,12 +81,18 @@ def is_valid_sensor_value(value: object) -> bool:
         return False
 
 
-def load_recent_sht3x_history(window_seconds: int) -> list[tuple[datetime, float, float]]:
+def normalize_sensor_value(value: object) -> float | None:
+    if not is_valid_sensor_value(value):
+        return None
+    return float(value)
+
+
+def load_recent_sht3x_history(window_seconds: int) -> list[tuple[datetime, float | None, float | None]]:
     if not SHT3X_HISTORY_FILE.exists():
         return []
 
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=window_seconds)
-    result: list[tuple[datetime, float, float]] = []
+    result: list[tuple[datetime, float | None, float | None]] = []
 
     try:
         for line in SHT3X_HISTORY_FILE.read_text(encoding="utf-8").splitlines():
@@ -95,11 +101,12 @@ def load_recent_sht3x_history(window_seconds: int) -> list[tuple[datetime, float
 
             payload = json.loads(line)
             ts_text = payload.get("ts")
-            temp = payload.get("temperature_c")
-            hum = payload.get("humidity_rh")
-            if ts_text is None or temp is None or hum is None:
+            if ts_text is None:
                 continue
-            if not is_valid_sensor_value(temp) or not is_valid_sensor_value(hum):
+
+            temp = normalize_sensor_value(payload.get("temperature_c"))
+            hum = normalize_sensor_value(payload.get("humidity_rh"))
+            if temp is None and hum is None:
                 continue
 
             timestamp = datetime.fromisoformat(ts_text)
@@ -107,7 +114,7 @@ def load_recent_sht3x_history(window_seconds: int) -> list[tuple[datetime, float
                 timestamp = timestamp.replace(tzinfo=timezone.utc)
 
             if timestamp >= cutoff:
-                result.append((timestamp, float(temp), float(hum)))
+                result.append((timestamp, temp, hum))
     except Exception:
         return []
 
@@ -125,8 +132,13 @@ def compact_sht3x_history(window_seconds: int) -> None:
     tmp_path.replace(SHT3X_HISTORY_FILE)
 
 
-def persist_sht3x_sample(timestamp: datetime, temperature: float, humidity: float, window_seconds: int) -> None:
-    if not is_valid_sensor_value(temperature) or not is_valid_sensor_value(humidity):
+def persist_sht3x_sample(
+    timestamp: datetime,
+    temperature: float | None,
+    humidity: float | None,
+    window_seconds: int,
+) -> None:
+    if temperature is None and humidity is None:
         return
 
     payload = {
@@ -173,7 +185,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--camera-serial", type=int, default=0, help="VC0706 serial id")
     parser.add_argument("--camera-chunk", type=int, default=128, help="Camera read chunk size")
     parser.add_argument("--camera-retries", type=int, default=1, help="Per-chunk retry count")
-    parser.add_argument("--camera-interval", type=float, default=CAMERA_INTERVAL_S, help="Delay between camera captures")
+    parser.add_argument(
+        "--camera-interval",
+        type=float,
+        default=CAMERA_INTERVAL_S,
+        help="Optional delay after each completed capture (seconds). Use 0 for continuous back-to-back capture",
+    )
 
     parser.add_argument("--window-seconds", type=int, default=WINDOW_SECONDS, help="Chart rolling window")
     parser.add_argument("--host", default="127.0.0.1")
@@ -235,16 +252,15 @@ def camera_loop(args: argparse.Namespace) -> None:
             )
 
             while not STOP_EVENT.is_set():
-                started = time.monotonic()
                 image = capture_camera_frame(camera, args)
                 if image:
                     with STATE.lock:
                         STATE.latest_camera_jpeg = image
                         STATE.latest_camera_ts = str(int(time.time() * 1000))
 
-                elapsed = time.monotonic() - started
-                delay = max(0.0, args.camera_interval - elapsed)
-                STOP_EVENT.wait(delay)
+                delay = max(0.0, float(getattr(args, "camera_interval", CAMERA_INTERVAL_S)))
+                if delay > 0:
+                    STOP_EVENT.wait(delay)
 
             session.close()
             return
@@ -264,17 +280,11 @@ def sht3x_loop(args: argparse.Namespace) -> None:
                 repeatability=args.sht3x_repeatability,
                 delay_s=args.sht3x_delay,
             )
-            temperature = result.get("temperature_c")
-            humidity = result.get("humidity_rh")
-            if (
-                temperature is not None
-                and humidity is not None
-                and is_valid_sensor_value(temperature)
-                and is_valid_sensor_value(humidity)
-            ):
+            temperature_f = normalize_sensor_value(result.get("temperature_c"))
+            humidity_f = normalize_sensor_value(result.get("humidity_rh"))
+
+            if temperature_f is not None or humidity_f is not None:
                 now = datetime.now(timezone.utc)
-                temperature_f = float(temperature)
-                humidity_f = float(humidity)
                 with STATE.lock:
                     STATE.timestamps.append(now)
                     STATE.temperatures.append(temperature_f)
@@ -416,34 +426,37 @@ def update_chart(_: int) -> tuple[go.Figure, dict]:
         points = [
             (timestamp, temp, hum)
             for timestamp, temp, hum in zip(STATE.timestamps, STATE.temperatures, STATE.humidities)
-            if timestamp >= window_start and is_valid_sensor_value(temp) and is_valid_sensor_value(hum)
+            if timestamp >= window_start and (temp is not None or hum is not None)
         ]
         camera_ts = STATE.latest_camera_ts
 
     fig = go.Figure()
     if points:
-        xs = [item[0] for item in points]
-        temps = [item[1] for item in points]
-        hums = [item[2] for item in points]
-        fig.add_trace(
-            go.Scatter(
-                x=xs,
-                y=temps,
-                mode="lines+markers",
-                name="Temperature (°C)",
-                line={"width": 2},
+        temp_points = [(ts, temp) for ts, temp, _ in points if temp is not None]
+        hum_points = [(ts, hum) for ts, _, hum in points if hum is not None]
+
+        if temp_points:
+            fig.add_trace(
+                go.Scatter(
+                    x=[ts for ts, _ in temp_points],
+                    y=[temp for _, temp in temp_points],
+                    mode="lines+markers",
+                    name="Temperature (°C)",
+                    line={"width": 2},
+                )
             )
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=xs,
-                y=hums,
-                mode="lines+markers",
-                name="Humidity (%RH)",
-                line={"width": 2},
-                yaxis="y2",
+
+        if hum_points:
+            fig.add_trace(
+                go.Scatter(
+                    x=[ts for ts, _ in hum_points],
+                    y=[hum for _, hum in hum_points],
+                    mode="lines+markers",
+                    name="Humidity (%RH)",
+                    line={"width": 2},
+                    yaxis="y2",
+                )
             )
-        )
 
     fig.update_layout(
         template="none",
