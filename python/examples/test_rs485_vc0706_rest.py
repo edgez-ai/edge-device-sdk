@@ -122,7 +122,7 @@ class VC0706RestCamera:
         client: Lwm2mRestClient,
         endpoint: str,
         instance: int = 0,
-        baudrate: int = 38400,
+        baudrate: int = 115200,
         tx_pin: Optional[int] = None,
         rx_pin: Optional[int] = None,
         debug: bool = True,
@@ -168,7 +168,6 @@ class VC0706RestCamera:
                 tx_pin=self.tx_pin,
                 rx_pin=self.rx_pin,
                 rx_size=4096,  # Large buffer for image data
-                mode=0,  # Raw UART mode
             )
             time.sleep(0.3)  # Wait for connection to stabilize
             self._log("RS485 connection opened")
@@ -390,7 +389,7 @@ def main():
     )
     parser.add_argument(
         "--base-url", "-u",
-        default="http://192.168.10.177:8088",
+        default="http://192.168.100.1:8088",
         help="Base URL of the LwM2M server REST API"
     )
     parser.add_argument(
@@ -402,8 +401,8 @@ def main():
     parser.add_argument(
         "--baud", "-b",
         type=int,
-        default=38400,
-        help="Baud rate (default: 38400)"
+        default=115200,
+        help="Baud rate (default: 115200)"
     )
     parser.add_argument(
         "--tx-pin",

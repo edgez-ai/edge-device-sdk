@@ -179,7 +179,7 @@ class UartSession:
         rx_pin: Optional[int] = None,
         rx_size: int = 1024,
         modbus_unit_id: int = 1,
-        mode: int = 0,
+        mode: Optional[int] = None,
     ) -> None:
         self._log(f"open(baud={baudrate}, tx={tx_pin}, rx={rx_pin}, rx_size={rx_size})")
         
