@@ -238,12 +238,26 @@ def camera_image() -> Response:
         image = STATE.latest_camera_jpeg
     if image:
         return Response(image, mimetype="image/jpeg")
+
+    fallback_path = Path(__file__).with_name("capture.jpg")
+    if fallback_path.exists():
+        try:
+            return Response(fallback_path.read_bytes(), mimetype="image/jpeg")
+        except Exception:
+            pass
+
     return Response(status=404)
 
 chart_container_style = {
-    "padding": "8px",
-    "borderRadius": "8px",
+    "padding": "0",
+    "borderRadius": "0",
     "backgroundColor": "transparent",
+    "position": "fixed",
+    "top": 0,
+    "left": 0,
+    "width": "100vw",
+    "height": "100vh",
+    "overflow": "hidden",
 }
 
 if BACKGROUND_IMAGE_URI:
@@ -258,11 +272,17 @@ if BACKGROUND_IMAGE_URI:
 
 app.layout = html.Div(
     [
-        html.H3("SHT3x Realtime Chart with VC0706 Live Background"),
         html.Div(
             dcc.Graph(
                 id="realtime-graph",
-                style={"backgroundColor": "transparent"},
+                style={
+                    "backgroundColor": "transparent",
+                    "position": "fixed",
+                    "top": 0,
+                    "left": 0,
+                    "width": "100vw",
+                    "height": "100vh",
+                },
             ),
             id="chart-container",
             style=chart_container_style,
@@ -270,9 +290,14 @@ app.layout = html.Div(
         dcc.Interval(id="tick", interval=UI_UPDATE_MS, n_intervals=0),
     ],
     style={
-        "maxWidth": "980px",
-        "margin": "24px auto",
-        "padding": "0 12px",
+        "position": "fixed",
+        "top": 0,
+        "left": 0,
+        "width": "100vw",
+        "height": "100vh",
+        "margin": 0,
+        "padding": 0,
+        "overflow": "hidden",
         "backgroundColor": "transparent",
     },
 )
@@ -323,7 +348,8 @@ def update_chart(_: int) -> tuple[go.Figure, dict]:
 
     fig.update_layout(
         template="none",
-        margin={"l": 40, "r": 20, "t": 30, "b": 40},
+        margin={"l": 0, "r": 0, "t": 0, "b": 0},
+        autosize=True,
         xaxis={
             "title": "Time (UTC)",
             "range": [window_start, now],
