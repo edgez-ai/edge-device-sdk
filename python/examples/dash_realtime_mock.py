@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
-Realtime Plotly Dash mock line chart with rolling background bands.
+Realtime Dash dashboard using live device data:
+- VC0706 camera image over REST (RS485) as chart background
+- SHT3x temperature/humidity over REST (I2C) as realtime chart
 
 Run:
-    pip install dash plotly
-    python dash_realtime_mock.py
+    pip install dash plotly requests
+    python dash_realtime_mock.py --client <ENDPOINT> --base-url <URL>
 
 Open in browser:
     http://127.0.0.1:8050
@@ -13,23 +15,47 @@ Open in browser:
 from __future__ import annotations
 
 import base64
-import random
+import argparse
+import sys
+import threading
+import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dash import Dash, Input, Output, dcc, html
+from flask import Response
 import plotly.graph_objects as go
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-WINDOW_SECONDS = 60
-UPDATE_MS = 500
-MAX_POINTS = WINDOW_SECONDS * 4
+from core import I2CSession, Lwm2mRestClient, RS485_OBJECT_ID, RS485_RESOURCES, RestConfig, UartSession, pick_client
+from driver import VC0706Camera, read_sht3x
+
+
+WINDOW_SECONDS = 300
+UI_UPDATE_MS = 1000
+SHT3X_INTERVAL_S = 5.0
+CAMERA_INTERVAL_S = 1.5
+MAX_POINTS = WINDOW_SECONDS
 BACKGROUND_BAND_SECONDS = 5
 
 
-timestamps: deque[datetime] = deque(maxlen=MAX_POINTS)
-values: deque[float] = deque(maxlen=MAX_POINTS)
+class SharedState:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.timestamps: deque[datetime] = deque(maxlen=MAX_POINTS)
+        self.temperatures: deque[float] = deque(maxlen=MAX_POINTS)
+        self.humidities: deque[float] = deque(maxlen=MAX_POINTS)
+        self.latest_camera_jpeg: bytes | None = None
+        self.latest_camera_ts: str = "0"
+
+
+STATE = SharedState()
+STOP_EVENT = threading.Event()
 
 
 def load_background_image() -> str | None:
@@ -45,12 +71,130 @@ def load_background_image() -> str | None:
 BACKGROUND_IMAGE_URI = load_background_image()
 
 
-def mock_next_value(previous: float | None) -> float:
-    """Generate the next mock point with gentle drift and noise."""
-    base = 25.0 if previous is None else previous
-    drift = (25.0 - base) * 0.03
-    noise = random.uniform(-0.35, 0.35)
-    return max(0.0, base + drift + noise)
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="VC0706 + SHT3x Dash dashboard via REST")
+    parser.add_argument("--base-url", default="http://192.168.100.1:8088", help="LwM2M REST base URL")
+    parser.add_argument("--client", help="LwM2M endpoint; auto-picks if only one client exists")
+    parser.add_argument("--instance", type=int, default=0, help="LwM2M object instance id")
+    parser.add_argument("--timeout", type=float, default=5.0, help="HTTP timeout seconds")
+
+    parser.add_argument("--sht3x-addr", type=lambda x: int(x, 0), default=0x44, help="SHT3x I2C address")
+    parser.add_argument("--sht3x-repeatability", choices=["high", "med", "low"], default="high")
+    parser.add_argument("--sht3x-delay", type=float, default=0.001, help="SHT3x conversion delay seconds")
+    parser.add_argument("--sht3x-interval", type=float, default=SHT3X_INTERVAL_S, help="SHT3x polling interval seconds")
+
+    parser.add_argument("--camera-baud", type=int, default=115200, help="VC0706 RS485 baudrate")
+    parser.add_argument("--camera-tx-pin", type=int, default=None, help="RS485 TX pin")
+    parser.add_argument("--camera-rx-pin", type=int, default=None, help="RS485 RX pin")
+    parser.add_argument("--camera-rx-size", type=int, default=4096, help="RS485 RX buffer size")
+    parser.add_argument("--camera-serial", type=int, default=0, help="VC0706 serial id")
+    parser.add_argument("--camera-chunk", type=int, default=128, help="Camera read chunk size")
+    parser.add_argument("--camera-retries", type=int, default=1, help="Per-chunk retry count")
+    parser.add_argument("--camera-interval", type=float, default=CAMERA_INTERVAL_S, help="Delay between camera captures")
+
+    parser.add_argument("--window-seconds", type=int, default=WINDOW_SECONDS, help="Chart rolling window")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8050)
+    parser.add_argument("--debug-io", action="store_true", help="Enable low-level UART debug logs")
+    return parser.parse_args()
+
+
+def init_client(args: argparse.Namespace) -> tuple[Lwm2mRestClient, str]:
+    client = Lwm2mRestClient(RestConfig(base_url=args.base_url, timeout=args.timeout))
+    endpoint = pick_client(client, args.client)
+    return client, endpoint
+
+
+def capture_camera_frame(camera: VC0706Camera, args: argparse.Namespace) -> bytes | None:
+    if not camera.take_picture():
+        return None
+
+    try:
+        length = camera.frame_length()
+        if length <= 0 or length > 500000:
+            return None
+        data = camera.read_picture(
+            length,
+            chunk_size=max(1, min(args.camera_chunk, 512)),
+            chunk_retries=max(0, args.camera_retries),
+            retry_delay_s=0.3,
+        )
+        if not data:
+            return None
+        return data
+    finally:
+        camera.resume_video()
+
+
+def camera_loop(args: argparse.Namespace) -> None:
+    while not STOP_EVENT.is_set():
+        try:
+            client, endpoint = init_client(args)
+            session = UartSession(
+                client,
+                endpoint,
+                args.instance,
+                object_id=RS485_OBJECT_ID,
+                resources=RS485_RESOURCES,
+                debug=args.debug_io,
+            )
+            session.open(
+                baudrate=args.camera_baud,
+                tx_pin=args.camera_tx_pin,
+                rx_pin=args.camera_rx_pin,
+                rx_size=args.camera_rx_size,
+            )
+            camera = VC0706Camera(
+                session,
+                serial_num=args.camera_serial,
+                timeout_s=max(0.2, args.timeout),
+                debug=args.debug_io,
+            )
+
+            while not STOP_EVENT.is_set():
+                started = time.monotonic()
+                image = capture_camera_frame(camera, args)
+                if image:
+                    with STATE.lock:
+                        STATE.latest_camera_jpeg = image
+                        STATE.latest_camera_ts = str(int(time.time() * 1000))
+
+                elapsed = time.monotonic() - started
+                delay = max(0.0, args.camera_interval - elapsed)
+                STOP_EVENT.wait(delay)
+
+            session.close()
+            return
+        except Exception:
+            STOP_EVENT.wait(2.0)
+
+
+def sht3x_loop(args: argparse.Namespace) -> None:
+    while not STOP_EVENT.is_set():
+        started = time.monotonic()
+        try:
+            client, endpoint = init_client(args)
+            session = I2CSession(client, endpoint, args.instance)
+            session.open(args.sht3x_addr)
+            result = read_sht3x(
+                session,
+                repeatability=args.sht3x_repeatability,
+                delay_s=args.sht3x_delay,
+            )
+            temperature = result.get("temperature_c")
+            humidity = result.get("humidity_rh")
+            if temperature is not None and humidity is not None:
+                now = datetime.now(timezone.utc)
+                with STATE.lock:
+                    STATE.timestamps.append(now)
+                    STATE.temperatures.append(float(temperature))
+                    STATE.humidities.append(float(humidity))
+        except Exception:
+            pass
+
+        elapsed = time.monotonic() - started
+        delay = max(0.0, args.sht3x_interval - elapsed)
+        STOP_EVENT.wait(delay)
 
 
 def build_rolling_bands(start_time: datetime, end_time: datetime) -> list[dict]:
@@ -85,7 +229,16 @@ def build_rolling_bands(start_time: datetime, end_time: datetime) -> list[dict]:
 
 
 app = Dash(__name__)
-app.title = "Realtime Mock Chart"
+app.title = "VC0706 + SHT3x Dashboard"
+
+
+@app.server.route("/camera.jpg")
+def camera_image() -> Response:
+    with STATE.lock:
+        image = STATE.latest_camera_jpeg
+    if image:
+        return Response(image, mimetype="image/jpeg")
+    return Response(status=404)
 
 chart_container_style = {
     "padding": "8px",
@@ -105,15 +258,16 @@ if BACKGROUND_IMAGE_URI:
 
 app.layout = html.Div(
     [
-        html.H3("Realtime Mock Sensor (Rolling Window)"),
+        html.H3("SHT3x Realtime Chart with VC0706 Live Background"),
         html.Div(
             dcc.Graph(
                 id="realtime-graph",
                 style={"backgroundColor": "transparent"},
             ),
+            id="chart-container",
             style=chart_container_style,
         ),
-        dcc.Interval(id="tick", interval=UPDATE_MS, n_intervals=0),
+        dcc.Interval(id="tick", interval=UI_UPDATE_MS, n_intervals=0),
     ],
     style={
         "maxWidth": "980px",
@@ -124,30 +278,48 @@ app.layout = html.Div(
 )
 
 
-@app.callback(Output("realtime-graph", "figure"), Input("tick", "n_intervals"))
-def update_chart(_: int) -> go.Figure:
+@app.callback(
+    Output("realtime-graph", "figure"),
+    Output("chart-container", "style"),
+    Input("tick", "n_intervals"),
+)
+def update_chart(_: int) -> tuple[go.Figure, dict]:
     now = datetime.now(timezone.utc)
-    previous = values[-1] if values else None
-    new_value = mock_next_value(previous)
+    window_seconds = getattr(APP_ARGS, "window_seconds", WINDOW_SECONDS)
+    window_start = now - timedelta(seconds=window_seconds)
 
-    timestamps.append(now)
-    values.append(new_value)
-
-    window_start = now - timedelta(seconds=WINDOW_SECONDS)
-    while timestamps and timestamps[0] < window_start:
-        timestamps.popleft()
-        values.popleft()
+    with STATE.lock:
+        points = [
+            (timestamp, temp, hum)
+            for timestamp, temp, hum in zip(STATE.timestamps, STATE.temperatures, STATE.humidities)
+            if timestamp >= window_start
+        ]
+        camera_ts = STATE.latest_camera_ts
 
     fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(
-            x=list(timestamps),
-            y=list(values),
-            mode="lines",
-            name="Mock value",
-            line={"width": 2},
+    if points:
+        xs = [item[0] for item in points]
+        temps = [item[1] for item in points]
+        hums = [item[2] for item in points]
+        fig.add_trace(
+            go.Scatter(
+                x=xs,
+                y=temps,
+                mode="lines+markers",
+                name="Temperature (°C)",
+                line={"width": 2},
+            )
         )
-    )
+        fig.add_trace(
+            go.Scatter(
+                x=xs,
+                y=hums,
+                mode="lines+markers",
+                name="Humidity (%RH)",
+                line={"width": 2},
+                yaxis="y2",
+            )
+        )
 
     fig.update_layout(
         template="none",
@@ -160,20 +332,59 @@ def update_chart(_: int) -> go.Figure:
             "zeroline": False,
         },
         yaxis={
-            "title": "Value",
-            "rangemode": "tozero",
+            "title": "Temperature (°C)",
+            "range": [-30, 70],
             "showgrid": True,
             "gridcolor": "rgba(255,255,255,0.25)",
+            "zeroline": False,
+        },
+        yaxis2={
+            "title": "Humidity (%RH)",
+            "overlaying": "y",
+            "side": "right",
+            "range": [0, 100],
+            "showgrid": False,
             "zeroline": False,
         },
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         shapes=build_rolling_bands(window_start, now),
         uirevision="fixed",
+        legend={"orientation": "h", "y": 1.1, "x": 0},
     )
 
-    return fig
+    container_style = dict(chart_container_style)
+    if camera_ts != "0":
+        container_style.update(
+            {
+                "backgroundImage": f"url('/camera.jpg?ts={camera_ts}')",
+                "backgroundSize": "cover",
+                "backgroundPosition": "center",
+                "backgroundRepeat": "no-repeat",
+            }
+        )
+    elif BACKGROUND_IMAGE_URI:
+        container_style.update(
+            {
+                "backgroundImage": f"url({BACKGROUND_IMAGE_URI})",
+                "backgroundSize": "cover",
+                "backgroundPosition": "center",
+                "backgroundRepeat": "no-repeat",
+            }
+        )
+
+    return fig, container_style
 
 
 if __name__ == "__main__":
-    app.run(debug=True, host="127.0.0.1", port=8050)
+    APP_ARGS = parse_args()
+
+    sensor_thread = threading.Thread(target=sht3x_loop, args=(APP_ARGS,), daemon=True)
+    camera_thread = threading.Thread(target=camera_loop, args=(APP_ARGS,), daemon=True)
+    sensor_thread.start()
+    camera_thread.start()
+
+    try:
+        app.run(debug=False, host=APP_ARGS.host, port=APP_ARGS.port)
+    finally:
+        STOP_EVENT.set()
