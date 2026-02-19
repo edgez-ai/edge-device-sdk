@@ -40,7 +40,7 @@ python3 cli.py --base-url http://192.168.10.177:8088 --client B43A45A45A08 vc070
   --iface uart --action capture --output vc0706.jpg --chunk-size 255 --resume --retries 3 --retry-delay 1.0
 
 
-  python3 cli.py --base-url http://192.168.10.177:8088 --client B43A45A45A08 --timeout 15 flow --iface rs485 --tx-pin 16 --rx-pin 15 --baud 9600 --unit-id 1 --address 0 --count 4 --poll-interval 1.0
+  python3 cli.py --base-url http://192.168.10.177:8088 --client B43A45A45A08 --timeout 15 flow --iface rs485 --tx-pin 17 --rx-pin 18 --baud 9600 --unit-id 1 --address 0 --count 4 --poll-interval 1.0
 
 
 
@@ -56,3 +56,5 @@ python3 cli.py --client B43A45A45A2C --base-url http://192.168.10.177:8088   sht
 
 
 python3 cli.py --client B43A45A45A08 --base-url http://192.168.10.177:8088   ens210
+
+ 
