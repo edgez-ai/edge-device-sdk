@@ -180,7 +180,6 @@ class VC0706RestCamera:
                 rx_pin=self.rx_pin,
                 rx_size=4096,  # Large buffer for image data
             )
-            time.sleep(0.3)  # Wait for connection to stabilize
             self._log("RS485 connection opened")
             return True
         except Exception as e:
@@ -234,7 +233,7 @@ class VC0706RestCamera:
             self._log(f"Error sending command: {e}")
             return False
     
-    def _read_response(self, timeout: float = 2.0, max_len: int = 256) -> bytes:
+    def _read_response(self, timeout: float = 2.0, max_len: int = 256, expected_len: Optional[int] = None) -> bytes:
         """
         Read response from camera with continuous polling.
         Matches the behavior of rs485_vc0706_camera._read_until_timeout()
@@ -242,6 +241,7 @@ class VC0706RestCamera:
         Args:
             timeout: Total timeout in seconds
             max_len: Maximum bytes to read
+            expected_len: If set, stop immediately once this many bytes are received
             
         Returns:
             Response bytes
@@ -250,6 +250,9 @@ class VC0706RestCamera:
         start_time = time.time()
         poll_interval = 0.05
         no_data_count = 0
+
+        if expected_len is not None:
+            expected_len = min(expected_len, max_len)
         
         self._log(f"Polling for response (timeout={timeout}s, max_len={max_len})...")
         
@@ -259,6 +262,9 @@ class VC0706RestCamera:
                 data += chunk
                 no_data_count = 0
                 self._log(f"  Got {len(chunk)} bytes, total: {len(data)} bytes")
+                if expected_len is not None and len(data) >= expected_len:
+                    self._log(f"  Reached expected response length ({expected_len} bytes), stopping")
+                    break
             else:
                 no_data_count += 1
                 # If we have some data and haven't received anything for a while, we might be done
@@ -426,13 +432,16 @@ class VC0706RestCamera:
             for attempt in range(1, max_retries + 1):
                 if not self._send_command(self.CMD_READ_FBUF, args, label=f"READ_FBUF@{offset}#{attempt}"):
                     continue
-                response = self._read_response(timeout=4.0, max_len=chunk_size + 32)
+                response = self._read_response(
+                    timeout=4.0,
+                    max_len=chunk_size + 10,
+                    expected_len=chunk_size + 10,
+                )
                 if len(response) >= (5 + chunk_size) and self._verify_response(response, self.CMD_READ_FBUF):
                     break
                 self._log(
                     f"Retry chunk offset {offset} attempt {attempt}/{max_retries}, got {len(response)} bytes"
                 )
-                time.sleep(0.1)
 
             if len(response) < 10:
                 self._log(f"Short response at offset {offset}: {len(response)} bytes")
@@ -464,15 +473,12 @@ class VC0706RestCamera:
             self._log("Failed to stop frame")
             return None
 
-        time.sleep(0.4)
-
         frame_len = 0
         for _ in range(max_retries):
             self.drain_buffer(0.1)
             frame_len = self.get_frame_buffer_length()
             if frame_len > 0:
                 break
-            time.sleep(0.5)
 
         if frame_len <= 0:
             self._log("Failed to get frame length")
@@ -506,16 +512,11 @@ class VC0706RestCamera:
         if not self._send_command(self.CMD_RESET, label="RESET"):
             return False
         
-        # Wait for reset to complete
-        time.sleep(0.5)
-        
         # Read acknowledgment
         response = self._read_response(timeout=3.0)
         
         if len(response) >= 4:
             self._log(f"Reset response: {response[:min(16, len(response))].hex()}")
-            # After reset, camera sends "Init end\r\n" string
-            time.sleep(2.0)  # Give camera time to reboot
             return True
         
         self._log("Reset: No response")
@@ -526,14 +527,14 @@ class VC0706RestCamera:
         Set camera resolution using VC0706 downsize command.
 
         Sends exact payload requested:
-        56 00 31 05 04 01 00 19 22
+        56 00 31 05 04 01 00 19 00
 
         Returns:
             True if ACK is received
         """
-        self._log("Setting camera resolution (56 00 31 05 04 01 00 19 22)...")
+        self._log("Setting camera resolution (56 00 31 05 04 01 00 19 00)...")
 
-        args = bytes([0x04, 0x01, 0x00, 0x19, 0x22])
+        args = bytes([0x04, 0x01, 0x00, 0x19, 0x00])
         if not self._send_command(self.CMD_SET_DOWNSIZE, args, label="SET_RESOLUTION"):
             return False
 
@@ -657,7 +658,6 @@ def main():
         if log_poller:
             print("Starting device log polling...")
             log_poller.start()
-            time.sleep(0.2)  # Let it fetch initial logs
         
         # Connect
         if not camera.connect():
@@ -668,7 +668,6 @@ def main():
         if args.reset:
             print("\n--- Resetting Camera ---")
             camera.reset()
-            time.sleep(2.0)
         
         ok = False
         if args.action == "version":
@@ -693,7 +692,6 @@ def main():
         
         # Fetch any remaining logs
         if log_poller:
-            time.sleep(0.5)
             log_poller.fetch_once()
         
         if ok:
