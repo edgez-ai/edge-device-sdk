@@ -115,6 +115,7 @@ class VC0706RestCamera:
     # Command codes
     CMD_GET_VERSION = 0x11
     CMD_RESET = 0x26
+    CMD_SET_DOWNSIZE = 0x31
     CMD_FBUF_CTRL = 0x36
     CMD_GET_FBUF_LEN = 0x34
     CMD_READ_FBUF = 0x32
@@ -520,6 +521,37 @@ class VC0706RestCamera:
         self._log("Reset: No response")
         return False
 
+    def set_resolution(self) -> bool:
+        """
+        Set camera resolution using VC0706 downsize command.
+
+        Sends exact payload requested:
+        56 00 31 05 04 01 00 19 22
+
+        Returns:
+            True if ACK is received
+        """
+        self._log("Setting camera resolution (56 00 31 05 04 01 00 19 22)...")
+
+        args = bytes([0x04, 0x01, 0x00, 0x19, 0x22])
+        if not self._send_command(self.CMD_SET_DOWNSIZE, args, label="SET_RESOLUTION"):
+            return False
+
+        response = self._read_response(timeout=2.0, max_len=64)
+        if len(response) >= 5 and response[:5] == bytes([0x76, self.SERIAL_NUM, self.CMD_SET_DOWNSIZE, 0x01, 0x00]):
+            self._log("Resolution command acknowledged")
+            return True
+
+        if len(response) >= 4 and self._verify_response(response, self.CMD_SET_DOWNSIZE):
+            self._log("Resolution command acknowledged")
+            return True
+
+        if response:
+            self._log(f"Resolution command response: {response.hex()}")
+        else:
+            self._log("Resolution command: no response")
+        return False
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -561,7 +593,7 @@ def main():
     )
     parser.add_argument(
         "--action",
-        choices=["version", "capture"],
+        choices=["version", "capture", "set-resolution"],
         default="capture",
         help="Action to run (default: capture)"
     )
@@ -643,11 +675,18 @@ def main():
             print("\n--- Getting Camera Version ---")
             version = camera.get_version()
             ok = bool(version)
+        elif args.action == "set-resolution":
+            print("\n--- Setting Camera Resolution ---")
+            ok = camera.set_resolution()
         else:
             if log_poller:
                 print("Pausing device log polling for image transfer...")
                 log_poller.stop()
                 log_poller = None
+            print("\n--- Setting Camera Resolution ---")
+            if not camera.set_resolution():
+                print("\n✗ Failed to set camera resolution before capture")
+                return 1
             print("\n--- Capturing Image ---")
             image = camera.capture_image()
             ok = bool(image) and camera.save_image(image, args.output)
@@ -660,12 +699,16 @@ def main():
         if ok:
             if args.action == "version":
                 print("\n✓ Camera version retrieved successfully")
+            elif args.action == "set-resolution":
+                print("\n✓ Camera resolution command sent successfully")
             else:
                 print("\n✓ Camera image captured successfully")
             return 0
         else:
             if args.action == "version":
                 print("\n✗ Failed to get camera version")
+            elif args.action == "set-resolution":
+                print("\n✗ Failed to set camera resolution")
             else:
                 print("\n✗ Failed to capture camera image")
             return 1
