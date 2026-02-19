@@ -18,6 +18,7 @@ import base64
 import argparse
 import json
 import math
+import os
 import sys
 import threading
 import time
@@ -44,7 +45,9 @@ SHT3X_INTERVAL_S = 15.0
 CAMERA_INTERVAL_S = 0.0
 MAX_POINTS = int(WINDOW_SECONDS / SHT3X_INTERVAL_S) + 1
 BACKGROUND_BAND_SECONDS = 5
-SHT3X_HISTORY_FILE = Path(__file__).with_name("sht3x_history.jsonl")
+DATA_DIR = Path(os.getenv("DATA_DIR", str(SCRIPT_DIR))).expanduser().resolve()
+SHT3X_HISTORY_FILE = DATA_DIR / "sht3x_history.jsonl"
+CAPTURE_IMAGES_DIR = DATA_DIR / "captures"
 
 
 class SharedState:
@@ -72,6 +75,19 @@ def load_background_image() -> str | None:
 
 
 BACKGROUND_IMAGE_URI = load_background_image()
+
+
+def ensure_storage_dirs() -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    CAPTURE_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def save_captured_image(image: bytes, capture_ts: datetime) -> None:
+    filename = capture_ts.strftime("%Y%m%dT%H%M%S_%fZ.jpg")
+    target = CAPTURE_IMAGES_DIR / filename
+    tmp = target.with_suffix(".jpg.tmp")
+    tmp.write_bytes(image)
+    tmp.replace(target)
 
 
 def is_valid_sensor_value(value: object) -> bool:
@@ -205,14 +221,15 @@ def init_client(args: argparse.Namespace) -> tuple[Lwm2mRestClient, str]:
     return client, endpoint
 
 
-def capture_camera_frame(camera: VC0706Camera, args: argparse.Namespace) -> bytes | None:
+def capture_camera_frame(camera: VC0706Camera, args: argparse.Namespace) -> tuple[bytes | None, datetime | None]:
+    capture_ts = datetime.now(timezone.utc)
     if not camera.take_picture():
-        return None
+        return None, None
 
     try:
         length = camera.frame_length()
         if length <= 0 or length > 500000:
-            return None
+            return None, None
         data = camera.read_picture(
             length,
             chunk_size=max(1, min(args.camera_chunk, 512)),
@@ -220,8 +237,8 @@ def capture_camera_frame(camera: VC0706Camera, args: argparse.Namespace) -> byte
             retry_delay_s=0.3,
         )
         if not data:
-            return None
-        return data
+            return None, None
+        return data, capture_ts
     finally:
         camera.resume_video()
 
@@ -252,11 +269,15 @@ def camera_loop(args: argparse.Namespace) -> None:
             )
 
             while not STOP_EVENT.is_set():
-                image = capture_camera_frame(camera, args)
-                if image:
+                image, capture_ts = capture_camera_frame(camera, args)
+                if image and capture_ts:
                     with STATE.lock:
                         STATE.latest_camera_jpeg = image
-                        STATE.latest_camera_ts = str(int(time.time() * 1000))
+                        STATE.latest_camera_ts = str(int(capture_ts.timestamp() * 1000))
+                    try:
+                        save_captured_image(image, capture_ts)
+                    except Exception:
+                        pass
 
                 delay = max(0.0, float(getattr(args, "camera_interval", CAMERA_INTERVAL_S)))
                 if delay > 0:
@@ -517,6 +538,7 @@ def update_chart(_: int) -> tuple[go.Figure, dict]:
 
 if __name__ == "__main__":
     APP_ARGS = parse_args()
+    ensure_storage_dirs()
     bootstrap_sht3x_history(APP_ARGS.window_seconds)
 
     sensor_thread = threading.Thread(target=sht3x_loop, args=(APP_ARGS,), daemon=True)
