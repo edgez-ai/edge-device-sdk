@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import base64
 import argparse
+import json
+import math
 import sys
 import threading
 import time
@@ -36,12 +38,13 @@ from core import I2CSession, Lwm2mRestClient, RS485_OBJECT_ID, RS485_RESOURCES, 
 from driver import VC0706Camera, read_sht3x
 
 
-WINDOW_SECONDS = 300
+WINDOW_SECONDS = 6 * 60 * 60
 UI_UPDATE_MS = 1000
-SHT3X_INTERVAL_S = 5.0
+SHT3X_INTERVAL_S = 60.0
 CAMERA_INTERVAL_S = 1.5
-MAX_POINTS = WINDOW_SECONDS
+MAX_POINTS = int(WINDOW_SECONDS / SHT3X_INTERVAL_S) + 1
 BACKGROUND_BAND_SECONDS = 5
+SHT3X_HISTORY_FILE = Path(__file__).with_name("sht3x_history.jsonl")
 
 
 class SharedState:
@@ -69,6 +72,86 @@ def load_background_image() -> str | None:
 
 
 BACKGROUND_IMAGE_URI = load_background_image()
+
+
+def is_valid_sensor_value(value: object) -> bool:
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def load_recent_sht3x_history(window_seconds: int) -> list[tuple[datetime, float, float]]:
+    if not SHT3X_HISTORY_FILE.exists():
+        return []
+
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=window_seconds)
+    result: list[tuple[datetime, float, float]] = []
+
+    try:
+        for line in SHT3X_HISTORY_FILE.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+
+            payload = json.loads(line)
+            ts_text = payload.get("ts")
+            temp = payload.get("temperature_c")
+            hum = payload.get("humidity_rh")
+            if ts_text is None or temp is None or hum is None:
+                continue
+            if not is_valid_sensor_value(temp) or not is_valid_sensor_value(hum):
+                continue
+
+            timestamp = datetime.fromisoformat(ts_text)
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=timezone.utc)
+
+            if timestamp >= cutoff:
+                result.append((timestamp, float(temp), float(hum)))
+    except Exception:
+        return []
+
+    return result
+
+
+def compact_sht3x_history(window_seconds: int) -> None:
+    recent = load_recent_sht3x_history(window_seconds)
+    tmp_path = SHT3X_HISTORY_FILE.with_suffix(".jsonl.tmp")
+    with tmp_path.open("w", encoding="utf-8") as handle:
+        for ts, temp, hum in recent:
+            handle.write(
+                json.dumps({"ts": ts.isoformat(), "temperature_c": temp, "humidity_rh": hum}) + "\n"
+            )
+    tmp_path.replace(SHT3X_HISTORY_FILE)
+
+
+def persist_sht3x_sample(timestamp: datetime, temperature: float, humidity: float, window_seconds: int) -> None:
+    if not is_valid_sensor_value(temperature) or not is_valid_sensor_value(humidity):
+        return
+
+    payload = {
+        "ts": timestamp.isoformat(),
+        "temperature_c": temperature,
+        "humidity_rh": humidity,
+    }
+    with SHT3X_HISTORY_FILE.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload) + "\n")
+    compact_sht3x_history(window_seconds)
+
+
+def bootstrap_sht3x_history(window_seconds: int) -> None:
+    history = load_recent_sht3x_history(window_seconds)
+    if not history:
+        return
+
+    with STATE.lock:
+        STATE.timestamps.clear()
+        STATE.temperatures.clear()
+        STATE.humidities.clear()
+        for ts, temp, hum in history:
+            STATE.timestamps.append(ts)
+            STATE.temperatures.append(temp)
+            STATE.humidities.append(hum)
 
 
 def parse_args() -> argparse.Namespace:
@@ -183,12 +266,28 @@ def sht3x_loop(args: argparse.Namespace) -> None:
             )
             temperature = result.get("temperature_c")
             humidity = result.get("humidity_rh")
-            if temperature is not None and humidity is not None:
+            if (
+                temperature is not None
+                and humidity is not None
+                and is_valid_sensor_value(temperature)
+                and is_valid_sensor_value(humidity)
+            ):
                 now = datetime.now(timezone.utc)
+                temperature_f = float(temperature)
+                humidity_f = float(humidity)
                 with STATE.lock:
                     STATE.timestamps.append(now)
-                    STATE.temperatures.append(float(temperature))
-                    STATE.humidities.append(float(humidity))
+                    STATE.temperatures.append(temperature_f)
+                    STATE.humidities.append(humidity_f)
+                try:
+                    persist_sht3x_sample(
+                        now,
+                        temperature_f,
+                        humidity_f,
+                        int(getattr(args, "window_seconds", WINDOW_SECONDS)),
+                    )
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -317,7 +416,7 @@ def update_chart(_: int) -> tuple[go.Figure, dict]:
         points = [
             (timestamp, temp, hum)
             for timestamp, temp, hum in zip(STATE.timestamps, STATE.temperatures, STATE.humidities)
-            if timestamp >= window_start
+            if timestamp >= window_start and is_valid_sensor_value(temp) and is_valid_sensor_value(hum)
         ]
         camera_ts = STATE.latest_camera_ts
 
@@ -352,6 +451,7 @@ def update_chart(_: int) -> tuple[go.Figure, dict]:
         autosize=True,
         xaxis={
             "title": "Time (UTC)",
+            "type": "date",
             "range": [window_start, now],
             "showgrid": True,
             "gridcolor": "rgba(255,255,255,0.25)",
@@ -374,7 +474,7 @@ def update_chart(_: int) -> tuple[go.Figure, dict]:
         },
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        shapes=build_rolling_bands(window_start, now),
+        shapes=build_rolling_bands(window_start, now) if points else [],
         uirevision="fixed",
         legend={"orientation": "h", "y": 1.1, "x": 0},
     )
@@ -404,6 +504,7 @@ def update_chart(_: int) -> tuple[go.Figure, dict]:
 
 if __name__ == "__main__":
     APP_ARGS = parse_args()
+    bootstrap_sht3x_history(APP_ARGS.window_seconds)
 
     sensor_thread = threading.Thread(target=sht3x_loop, args=(APP_ARGS,), daemon=True)
     camera_thread = threading.Thread(target=camera_loop, args=(APP_ARGS,), daemon=True)
