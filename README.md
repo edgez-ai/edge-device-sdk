@@ -26,6 +26,35 @@ readings = ens210_read(session)
 print(readings)
 ```
 
+### Modbus RTU REST examples
+
+Use [python/examples/modbus_rtu_rest.py](python/examples/modbus_rtu_rest.py) for RS485 Modbus tests over the REST API.
+
+- Scan device address/baud combinations and stop at first hit:
+
+```bash
+cd python/examples
+python3 modbus_rtu_rest.py --client B43A45A45A08 --base-url http://192.168.10.105:8088 --action scan --scan-min-unit 1 --scan-max-unit 20 --scan-baud-list 4800,9600,2400
+```
+
+- One-shot flow meter read (same decode profile as `collect_flow_modbus.py`):
+
+```bash
+cd python/examples
+python3 modbus_rtu_rest.py --client B43A45A45A08 --base-url http://192.168.10.105:8088 --action flow --baud 9600 --unit-id 1 --address 0 --count 4
+```
+
+- Continuous flow polling:
+
+```bash
+cd python/examples
+python3 modbus_rtu_rest.py --client B43A45A45A08 --base-url http://192.168.10.105:8088 --action flow-poll --baud 9600 --unit-id 1 --address 0 --count 4 --poll-interval 1.0
+```
+
+Notes:
+- `--tx-pin` / `--rx-pin` are optional; if omitted, device-side pin defaults are used.
+- For environmental (CO2/temp/humidity/light) profile, use `--action env`.
+
 ## License
 - The `web-ui` package is licensed under the Eclipse Public License 2.0 (EPL-2.0).
 - All other parts of the repository are licensed under the Apache License 2.0.
