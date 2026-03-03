@@ -11,9 +11,11 @@ end
 add_script_path()
 
 local RS485 = require("rs485_interface")
+local I2C = require("i2c_interface")
 local Util = require("util")
 
 local cfg_defaults = {
+  script = "flow",
   backend = "rest",
   client = nil,
   base_url = nil,
@@ -29,8 +31,15 @@ local cfg_defaults = {
   modbus_timeout = 1.0,
   flow_scale = 100000.0,
   volume_scale = 10000.0,
+  i2c_address = 0x44,
+  i2c_rx_size = 16,
   quiet = false,
   http_timeout = 5.0,
+}
+
+-- Scripts that use I2C interface instead of RS485
+local i2c_scripts = {
+  sht3x_temp = true,
 }
 
 local function parse_args(argv)
@@ -53,6 +62,10 @@ local function parse_args(argv)
       cfg.base_url = next_value()
     elseif a == "--backend" then
       cfg.backend = next_value()
+    elseif a == "--script" or a == "-s" then
+      cfg.script = next_value()
+    elseif a == "--i2c-address" then
+      cfg.i2c_address = tonumber(next_value())
     elseif a == "--help" or a == "-h" then
       cfg.help = true
     else
@@ -67,10 +80,23 @@ end
 
 local function print_usage()
   print("Usage:")
-  print("  lua lua/cli.lua --client <ENDPOINT> --base-url <URL> [--backend rest|native|auto]")
+  print("  lua lua/cli.lua --client <ENDPOINT> --base-url <URL> [OPTIONS]")
   print("")
-  print("Example:")
+  print("Options:")
+  print("  --client, -c <ENDPOINT>   LwM2M client endpoint name")
+  print("  --base-url, -u <URL>      LwM2M server REST API base URL")
+  print("  --script, -s <NAME>       Sensor script to run (default: flow)")
+  print("  --backend <TYPE>          Backend type: rest|native|auto (default: rest)")
+  print("  --i2c-address <ADDR>      I2C device address as decimal (default: 68 = 0x44)")
+  print("  --help, -h                Show this help")
+  print("")
+  print("Available scripts:")
+  print("  flow          Flow meter via RS485/Modbus")
+  print("  sht3x_temp    SHT3x temperature & humidity via I2C")
+  print("")
+  print("Examples:")
   print("  lua lua/cli.lua --client B43A45A45A08 --base-url http://192.168.10.105:8088")
+  print("  lua lua/cli.lua -c B43A45A45A08 -u http://192.168.10.105:8088 -s sht3x_temp")
 end
 
 local function main()
@@ -90,6 +116,21 @@ local function main()
     return 1
   end
 
+  local script_name = cfg.script or "flow"
+  local use_i2c = i2c_scripts[script_name]
+
+  -- Set up I2C globals
+  _G.I2C_BACKEND = cfg.backend
+  _G.I2C_BASE_URL = cfg.base_url
+  _G.I2C_CLIENT = cfg.client
+  _G.I2C_INSTANCE = cfg.instance
+  _G.I2C_ADDRESS = cfg.i2c_address
+  _G.I2C_RX_SIZE = cfg.i2c_rx_size
+  _G.I2C_TX_PIN = cfg.tx_pin
+  _G.I2C_RX_PIN = cfg.rx_pin
+  _G.I2C_HTTP_TIMEOUT = cfg.http_timeout
+
+  -- Set up RS485 globals
   _G.RS485_BACKEND = cfg.backend
   _G.RS485_BASE_URL = cfg.base_url
   _G.RS485_CLIENT = cfg.client
@@ -101,19 +142,16 @@ local function main()
   _G.RS485_RX_PIN = cfg.rx_pin
   _G.RS485_HTTP_TIMEOUT = cfg.http_timeout
 
-  local _ = RS485
-  local _u = Util
-
-  package.loaded["flow"] = nil
-  local ok, result_or_err = pcall(require, "flow")
+  package.loaded[script_name] = nil
+  local ok, result_or_err = pcall(require, script_name)
   if not ok then
-    io.stderr:write("\n✗ Failed to read/decode flow meter values: " .. tostring(result_or_err) .. "\n")
+    io.stderr:write("\n✗ Failed to run script '" .. script_name .. "': " .. tostring(result_or_err) .. "\n")
     return 1
   end
 
   local result = result_or_err
   if not result then
-    io.stderr:write("\n✗ Failed to read/decode flow meter values: empty result\n")
+    io.stderr:write("\n✗ Script '" .. script_name .. "' returned empty result\n")
     return 1
   end
 
@@ -122,7 +160,7 @@ local function main()
     return 1
   end
 
-  print("\n--- Reading Flow Meter Values (Injected RS485) ---")
+  print("\n--- Reading Sensor Values (" .. script_name .. ") ---")
   for i, item in ipairs(result) do
     if type(item) == "table" then
       print(string.format(
@@ -137,7 +175,7 @@ local function main()
       print(string.format("[%d] value=%s", i, tostring(item)))
     end
   end
-  print("\n✓ Flow meter read successful")
+  print("\n✓ Script '" .. script_name .. "' completed successfully")
   return 0
 end
 
