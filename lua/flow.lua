@@ -20,6 +20,9 @@ local COUNT = 4
 local MODBUS_TIMEOUT = 1.0
 local FLOW_SCALE = 100000.0
 local VOLUME_SCALE = 10000.0
+local FLOW_OBJECT = 3345
+local FLOW_RATE_RESOURCE = 5700
+local TOTAL_VOLUME_RESOURCE = 5701
 
 local LOG_CFG = { quiet = false }
 
@@ -99,7 +102,23 @@ function Flow.run()
   if not result then
     return nil, read_err
   end
-  return result
+
+  local list = {}
+  table.insert(list, {
+    object = FLOW_OBJECT,
+    instance = 0,
+    resource = FLOW_RATE_RESOURCE,
+    value = result.flow_rate,
+  })
+
+  table.insert(list, {
+    object = FLOW_OBJECT,
+    instance = 0,
+    resource = TOTAL_VOLUME_RESOURCE,
+    value = result.total_volume,
+  })
+
+  return list
 end
 
 return Flow

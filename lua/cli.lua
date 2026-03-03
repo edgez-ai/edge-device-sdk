@@ -111,9 +111,26 @@ local function main()
     return 1
   end
 
+  if type(result) ~= "table" then
+    io.stderr:write("\n✗ Unexpected result payload type: " .. type(result) .. "\n")
+    return 1
+  end
+
   print("\n--- Reading Flow Meter Values (Injected RS485) ---")
-  print(string.format("Flow: %.4f L/h", result.flow_rate))
-  print(string.format("Volume: %.4f L", result.total_volume))
+  for i, item in ipairs(result) do
+    if type(item) == "table" then
+      print(string.format(
+        "[%d] object=%s instance=%s resource=%s value=%s",
+        i,
+        tostring(item.object),
+        tostring(item.instance),
+        tostring(item.resource),
+        tostring(item.value)
+      ))
+    else
+      print(string.format("[%d] value=%s", i, tostring(item)))
+    end
+  end
   print("\n✓ Flow meter read successful")
   return 0
 end
