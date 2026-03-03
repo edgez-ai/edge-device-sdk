@@ -94,13 +94,13 @@ function Flow.run()
   local ok, err = rs485_connect(BAUD)
   if not ok then
     rs485_safe_close()
-    return nil, "failed to open rs485: " .. tostring(err)
+    return {}, "failed to open rs485: " .. tostring(err)
   end
 
   local result, read_err = Flow.read_values()
   rs485_safe_close()
   if not result then
-    return nil, read_err
+    return {}, read_err
   end
 
   local list = {}
