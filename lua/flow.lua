@@ -1,3 +1,5 @@
+local result = {}
+
 local util_build_read_holding_request = util_build_read_holding_request
 local util_log = util_log
 local util_bytes_to_hex = util_bytes_to_hex
@@ -100,19 +102,19 @@ if not result then
   error(read_err)
 end
 
-local list = {}
-table.insert(list, {
+
+table.insert(result, {
   object = FLOW_OBJECT,
   instance = 0,
   resource = FLOW_RATE_RESOURCE,
   value = result.flow_rate,
 })
 
-table.insert(list, {
+table.insert(result, {
   object = FLOW_OBJECT,
   instance = 0,
   resource = TOTAL_VOLUME_RESOURCE,
   value = result.total_volume,
 })
 
-return list
+return result
