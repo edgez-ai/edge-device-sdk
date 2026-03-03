@@ -12,7 +12,6 @@ add_script_path()
 
 local RS485 = require("rs485_interface")
 local Util = require("util")
-local Flow = require("flow")
 
 local cfg_defaults = {
   backend = "rest",
@@ -105,9 +104,16 @@ local function main()
   local _ = RS485
   local _u = Util
 
-  local result, err = Flow.run()
+  package.loaded["flow"] = nil
+  local ok, result_or_err = pcall(require, "flow")
+  if not ok then
+    io.stderr:write("\n✗ Failed to read/decode flow meter values: " .. tostring(result_or_err) .. "\n")
+    return 1
+  end
+
+  local result = result_or_err
   if not result then
-    io.stderr:write("\n✗ Failed to read/decode flow meter values: " .. tostring(err) .. "\n")
+    io.stderr:write("\n✗ Failed to read/decode flow meter values: empty result\n")
     return 1
   end
 

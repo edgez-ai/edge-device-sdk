@@ -1,5 +1,3 @@
-local Flow = {}
-
 local util_build_read_holding_request = util_build_read_holding_request
 local util_log = util_log
 local util_bytes_to_hex = util_bytes_to_hex
@@ -68,7 +66,7 @@ local function read_holding_registers(address, count)
   return nil, "No valid Modbus response frame received"
 end
 
-function Flow.read_values()
+local function read_values()
   local count = COUNT == 5 and 4 or COUNT
   local regs, err = read_holding_registers(ADDRESS, count)
   if not regs then
@@ -90,35 +88,31 @@ function Flow.read_values()
   }
 end
 
-function Flow.run()
-  local ok, err = rs485_connect(BAUD)
-  if not ok then
-    rs485_safe_close()
-    return nil, "failed to open rs485: " .. tostring(err)
-  end
-
-  local result, read_err = Flow.read_values()
+local ok, err = rs485_connect(BAUD)
+if not ok then
   rs485_safe_close()
-  if not result then
-    return nil, read_err
-  end
-
-  local list = {}
-  table.insert(list, {
-    object = FLOW_OBJECT,
-    instance = 0,
-    resource = FLOW_RATE_RESOURCE,
-    value = result.flow_rate,
-  })
-
-  table.insert(list, {
-    object = FLOW_OBJECT,
-    instance = 0,
-    resource = TOTAL_VOLUME_RESOURCE,
-    value = result.total_volume,
-  })
-
-  return list
+  error("failed to open rs485: " .. tostring(err))
 end
 
-return Flow
+local result, read_err = read_values()
+rs485_safe_close()
+if not result then
+  error(read_err)
+end
+
+local list = {}
+table.insert(list, {
+  object = FLOW_OBJECT,
+  instance = 0,
+  resource = FLOW_RATE_RESOURCE,
+  value = result.flow_rate,
+})
+
+table.insert(list, {
+  object = FLOW_OBJECT,
+  instance = 0,
+  resource = TOTAL_VOLUME_RESOURCE,
+  value = result.total_volume,
+})
+
+return list
