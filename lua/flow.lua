@@ -1,28 +1,51 @@
 local Flow = {}
 
-local function read_holding_registers(cfg, address, count)
-  local request = _G.util_build_read_holding_request(cfg.unit_id, address, count)
-  _G.util_log(cfg, "Flow", "TX Read Holding Registers: " .. _G.util_bytes_to_hex(request))
+local util_build_read_holding_request = util_build_read_holding_request
+local util_log = util_log
+local util_bytes_to_hex = util_bytes_to_hex
+local util_extract_modbus_frame = util_extract_modbus_frame
+local util_decode_bcd_32 = util_decode_bcd_32
 
-  local ok, err = _G.rs485_reset_rx_cursor()
+local rs485_connect = rs485_connect
+local rs485_safe_close = rs485_safe_close
+local rs485_reset_rx_cursor = rs485_reset_rx_cursor
+local rs485_write = rs485_write
+local rs485_read_chunk = rs485_read_chunk
+local rs485_sleep = rs485_sleep
+
+local BAUD = 9600
+local UNIT_ID = 1
+local ADDRESS = 0
+local COUNT = 4
+local MODBUS_TIMEOUT = 1.0
+local FLOW_SCALE = 100000.0
+local VOLUME_SCALE = 10000.0
+
+local LOG_CFG = { quiet = false }
+
+local function read_holding_registers(address, count)
+  local request = util_build_read_holding_request(UNIT_ID, address, count)
+  util_log(LOG_CFG, "Flow", "TX Read Holding Registers: " .. util_bytes_to_hex(request))
+
+  local ok, err = rs485_reset_rx_cursor()
   if not ok then
     return nil, "failed to reset rx cursor: " .. tostring(err)
   end
 
-  ok, err = _G.rs485_write(request)
+  ok, err = rs485_write(request)
   if not ok then
     return nil, "failed to write tx payload: " .. tostring(err)
   end
 
   local byte_count = count * 2
-  local deadline = os.clock() + cfg.modbus_timeout
+  local deadline = os.clock() + MODBUS_TIMEOUT
   local buffer = ""
 
   while os.clock() < deadline do
-    local chunk = _G.rs485_read_chunk()
+    local chunk = rs485_read_chunk()
     if chunk and #chunk > 0 then
       buffer = buffer .. chunk
-      local frame = _G.util_extract_modbus_frame(buffer, cfg.unit_id, 0x03, byte_count)
+      local frame = util_extract_modbus_frame(buffer, UNIT_ID, 0x03, byte_count)
       if frame then
         local payload = frame:sub(4, -3)
         local regs = {}
@@ -34,17 +57,17 @@ local function read_holding_registers(cfg, address, count)
         return regs
       end
     end
-    if type(_G.rs485_sleep) == "function" then
-      _G.rs485_sleep(0.02)
+    if type(rs485_sleep) == "function" then
+      rs485_sleep(0.02)
     end
   end
 
   return nil, "No valid Modbus response frame received"
 end
 
-function Flow.read_values(cfg)
-  local count = cfg.count == 5 and 4 or cfg.count
-  local regs, err = read_holding_registers(cfg, cfg.address, count)
+function Flow.read_values()
+  local count = COUNT == 5 and 4 or COUNT
+  local regs, err = read_holding_registers(ADDRESS, count)
   if not regs then
     return nil, err
   end
@@ -55,8 +78,8 @@ function Flow.read_values(cfg)
   local flow_rate_raw = (regs[3] << 16) | regs[4]
   local total_volume_raw = (regs[1] << 16) | regs[2]
 
-  local flow_rate = _G.util_decode_bcd_32(flow_rate_raw) / cfg.flow_scale
-  local total_volume = _G.util_decode_bcd_32(total_volume_raw) / cfg.volume_scale
+  local flow_rate = util_decode_bcd_32(flow_rate_raw) / FLOW_SCALE
+  local total_volume = util_decode_bcd_32(total_volume_raw) / VOLUME_SCALE
   return {
     flow_rate = flow_rate,
     total_volume = total_volume,
@@ -64,35 +87,15 @@ function Flow.read_values(cfg)
   }
 end
 
-function Flow.run(cfg)
-  if type(cfg) ~= "table" then
-    return nil, "cfg must be a table"
-  end
-
-  if type(_G.rs485_write) ~= "function" or type(_G.rs485_read_chunk) ~= "function" then
-    return nil, "rs485 global functions are not ready (load rs485_interface.lua first)"
-  end
-
-  if type(_G.util_build_read_holding_request) ~= "function"
-    or type(_G.util_extract_modbus_frame) ~= "function"
-    or type(_G.util_decode_bcd_32) ~= "function"
-    or type(_G.util_bytes_to_hex) ~= "function"
-    or type(_G.util_log) ~= "function" then
-    return nil, "utility global functions are not ready (load util.lua first)"
-  end
-
-  if type(_G.rs485_connect) ~= "function" then
-    return nil, "global function rs485_connect is not defined"
-  end
-
-  local ok, err = _G.rs485_connect(cfg.baud)
+function Flow.run()
+  local ok, err = rs485_connect(BAUD)
   if not ok then
-    _G.rs485_safe_close()
+    rs485_safe_close()
     return nil, "failed to open rs485: " .. tostring(err)
   end
 
-  local result, read_err = Flow.read_values(cfg)
-  _G.rs485_safe_close()
+  local result, read_err = Flow.read_values()
+  rs485_safe_close()
   if not result then
     return nil, read_err
   end

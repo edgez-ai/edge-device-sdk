@@ -105,7 +105,7 @@ local function main()
   local _ = RS485
   local _u = Util
 
-  local result, err = Flow.run(cfg)
+  local result, err = Flow.run()
   if not result then
     io.stderr:write("\n✗ Failed to read/decode flow meter values: " .. tostring(err) .. "\n")
     return 1
