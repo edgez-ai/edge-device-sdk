@@ -271,10 +271,16 @@ local Module = {}
 
 local function new_native_backend(cfg)
   local native = rawget(_G, "rs485")
-  if type(native) ~= "table" or type(native.new) ~= "function" then
-    return nil
+  if type(native) ~= "table" then
+    return nil, nil
   end
-  return native.new(cfg or {})
+  if type(native.new) == "function" then
+    return native.new(cfg or {}), "native-object"
+  end
+  if type(native.open) == "function" and type(native.write) == "function" then
+    return native, "native-global"
+  end
+  return nil, nil
 end
 
 function Module.new(cfg)
@@ -297,6 +303,147 @@ function Module.new(cfg)
   end
 
   return RestBackend:new(cfg)
+end
+
+local active_backend = nil
+local active_backend_kind = nil
+
+local function current_cfg(baud)
+  return {
+    backend = rawget(_G, "RS485_BACKEND") or "auto",
+    base_url = rawget(_G, "RS485_BASE_URL"),
+    client = rawget(_G, "RS485_CLIENT"),
+    instance = rawget(_G, "RS485_INSTANCE") or 0,
+    baud = tonumber(baud) or tonumber(rawget(_G, "RS485_BAUD")) or 9600,
+    tx_pin = rawget(_G, "RS485_TX_PIN"),
+    rx_pin = rawget(_G, "RS485_RX_PIN"),
+    unit_id = rawget(_G, "RS485_UNIT_ID") or 1,
+    rx_size = rawget(_G, "RS485_RX_SIZE") or 256,
+    rs485_mode = rawget(_G, "RS485_MODE") or 0,
+    http_timeout = rawget(_G, "RS485_HTTP_TIMEOUT") or 5.0,
+  }
+end
+
+local function create_backend(cfg)
+  if cfg.backend == "native" then
+    local backend, kind = new_native_backend(cfg)
+    if not backend then
+      return nil, nil, "native rs485 backend requested but not available"
+    end
+    return backend, kind, nil
+  end
+
+  if cfg.backend ~= "rest" then
+    local backend, kind = new_native_backend(cfg)
+    if backend then
+      return backend, kind, nil
+    end
+  end
+
+  if not cfg.base_url or cfg.base_url == "" or not cfg.client or cfg.client == "" then
+    return nil, nil, "RS485_BASE_URL and RS485_CLIENT are required for REST backend"
+  end
+
+  return RestBackend:new(cfg), "rest", nil
+end
+
+function _G.rs485_init(baud)
+  local cfg = current_cfg(baud)
+  local backend, kind, create_err = create_backend(cfg)
+  if not backend then
+    return false, create_err
+  end
+
+  local ok, err
+  if kind == "native-global" then
+    if type(backend.init) == "function" then
+      ok, err = backend.init(cfg.baud)
+    elseif type(backend.configure) == "function" then
+      ok, err = backend.configure(cfg)
+    else
+      ok = true
+    end
+  else
+    ok, err = backend:configure(cfg)
+  end
+
+  if not ok then
+    active_backend = nil
+    active_backend_kind = nil
+    return false, err
+  end
+
+  active_backend = backend
+  active_backend_kind = kind
+  return true
+end
+
+local function ensure_backend()
+  if not active_backend then
+    return nil, "rs485_init(baud) must be called first"
+  end
+  return active_backend, nil
+end
+
+function _G.rs485_open()
+  local backend, err = ensure_backend()
+  if not backend then return false, err end
+
+  if active_backend_kind == "native-global" and type(backend.open) == "function" then
+    return backend.open()
+  end
+  return backend:open()
+end
+
+function _G.rs485_close()
+  local backend, err = ensure_backend()
+  if not backend then return false, err end
+
+  if active_backend_kind == "native-global" and type(backend.close) == "function" then
+    return backend.close()
+  end
+  return backend:close()
+end
+
+function _G.rs485_reset_rx_cursor()
+  local backend, err = ensure_backend()
+  if not backend then return false, err end
+
+  if active_backend_kind == "native-global" and type(backend.reset_rx_cursor) == "function" then
+    return backend.reset_rx_cursor()
+  end
+  return backend:reset_rx_cursor()
+end
+
+function _G.rs485_write(payload)
+  local backend, err = ensure_backend()
+  if not backend then return false, err end
+
+  if active_backend_kind == "native-global" and type(backend.write) == "function" then
+    return backend.write(payload)
+  end
+  return backend:write(payload)
+end
+
+function _G.rs485_read_chunk()
+  local backend = active_backend
+  if not backend then return "" end
+
+  if active_backend_kind == "native-global" and type(backend.read_chunk) == "function" then
+    local ok, out = pcall(backend.read_chunk)
+    if not ok then return "" end
+    return out or ""
+  end
+  local out = backend:read_chunk()
+  return out or ""
+end
+
+function _G.rs485_sleep(seconds)
+  local backend = active_backend
+  if backend and active_backend_kind ~= "native-global" and type(backend.sleep) == "function" then
+    return backend:sleep(seconds)
+  end
+  busy_sleep(seconds)
 end
 
 return Module
