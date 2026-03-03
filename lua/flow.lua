@@ -7,9 +7,10 @@ local rs485_count = 4
 local rs485_modbus_timeout = 1.0
 local rs485_flow_scale = 100000.0
 local rs485_volume_scale = 10000.0
-local rs485_flow_object = 3345
+local rs485_flow_rate_object = 3346
 local rs485_flow_rate_resource = 5700
-local rs485_total_volume_resource = 5701
+local rs485_total_volume_object = 3424
+local rs485_total_volume_resource = 1
 
 local rs485_log_cfg = { quiet = false }
 
@@ -91,14 +92,14 @@ end
 
 
 table.insert(result, {
-  object = rs485_flow_object,
+  object = rs485_flow_rate_object,
   instance = 0,
   resource = rs485_flow_rate_resource,
   value = rs485_result.flow_rate,
 })
 
 table.insert(result, {
-  object = rs485_flow_object,
+  object = rs485_total_volume_object,
   instance = 0,
   resource = rs485_total_volume_resource,
   value = rs485_result.total_volume,
