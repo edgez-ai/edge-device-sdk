@@ -65,11 +65,20 @@ local function util_decode_bcd_32(value)
     + (value & 0xF)
 end
 
+local function util_log(cfg, tag, msg)
+  if cfg and cfg.quiet then
+    return
+  end
+  local prefix = tag or "Log"
+  io.stderr:write("[" .. prefix .. "] " .. tostring(msg or "") .. "\n")
+end
+
 _G.util_bytes_to_hex = util_bytes_to_hex
 _G.util_crc16_modbus = util_crc16_modbus
 _G.util_build_read_holding_request = util_build_read_holding_request
 _G.util_extract_modbus_frame = util_extract_modbus_frame
 _G.util_decode_bcd_32 = util_decode_bcd_32
+_G.util_log = util_log
 
 return {
   bytes_to_hex = util_bytes_to_hex,
@@ -77,4 +86,5 @@ return {
   build_read_holding_request = util_build_read_holding_request,
   extract_modbus_frame = util_extract_modbus_frame,
   decode_bcd_32 = util_decode_bcd_32,
+  log = util_log,
 }

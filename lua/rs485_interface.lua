@@ -446,4 +446,33 @@ function _G.rs485_sleep(seconds)
   busy_sleep(seconds)
 end
 
+function _G.rs485_connect(baud)
+  if type(_G.rs485_init) ~= "function" then
+    return false, "global function rs485_init is not defined"
+  end
+  if type(_G.rs485_open) ~= "function" then
+    return false, "global function rs485_open is not defined"
+  end
+  if type(_G.rs485_reset_rx_cursor) ~= "function" then
+    return false, "global function rs485_reset_rx_cursor is not defined"
+  end
+
+  local ok, err = _G.rs485_init(baud)
+  if not ok then return false, err end
+
+  ok, err = _G.rs485_open()
+  if not ok then return false, err end
+
+  ok, err = _G.rs485_reset_rx_cursor()
+  if not ok then return false, err end
+
+  return true
+end
+
+function _G.rs485_safe_close()
+  if type(_G.rs485_close) == "function" then
+    _G.rs485_close()
+  end
+end
+
 return Module

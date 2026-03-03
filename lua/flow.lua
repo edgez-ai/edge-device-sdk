@@ -1,50 +1,8 @@
 local Flow = {}
 
-local function log(cfg, msg)
-  if not cfg.quiet then
-    io.stderr:write("[Flow] " .. msg .. "\n")
-  end
-end
-
-local function connect_rs485(cfg)
-  if type(_G.util_build_read_holding_request) ~= "function"
-    or type(_G.util_extract_modbus_frame) ~= "function"
-    or type(_G.util_decode_bcd_32) ~= "function"
-    or type(_G.util_bytes_to_hex) ~= "function" then
-    return false, "utility global functions are not ready (load util.lua first)"
-  end
-
-  if type(_G.rs485_init) ~= "function" then
-    return false, "global function rs485_init is not defined"
-  end
-
-  local ok, err = _G.rs485_init(cfg.baud)
-  if not ok then return false, err end
-
-  if type(_G.rs485_open) ~= "function" then
-    return false, "global function rs485_open is not defined"
-  end
-  ok, err = _G.rs485_open()
-  if not ok then return false, err end
-
-  if type(_G.rs485_reset_rx_cursor) ~= "function" then
-    return false, "global function rs485_reset_rx_cursor is not defined"
-  end
-  ok, err = _G.rs485_reset_rx_cursor()
-  if not ok then return false, err end
-
-  return true
-end
-
-local function close_rs485()
-  if type(_G.rs485_close) == "function" then
-    _G.rs485_close()
-  end
-end
-
 local function read_holding_registers(cfg, address, count)
   local request = _G.util_build_read_holding_request(cfg.unit_id, address, count)
-  log(cfg, "TX Read Holding Registers: " .. _G.util_bytes_to_hex(request))
+  _G.util_log(cfg, "Flow", "TX Read Holding Registers: " .. _G.util_bytes_to_hex(request))
 
   local ok, err = _G.rs485_reset_rx_cursor()
   if not ok then
@@ -115,14 +73,26 @@ function Flow.run(cfg)
     return nil, "rs485 global functions are not ready (load rs485_interface.lua first)"
   end
 
-  local ok, err = connect_rs485(cfg)
+  if type(_G.util_build_read_holding_request) ~= "function"
+    or type(_G.util_extract_modbus_frame) ~= "function"
+    or type(_G.util_decode_bcd_32) ~= "function"
+    or type(_G.util_bytes_to_hex) ~= "function"
+    or type(_G.util_log) ~= "function" then
+    return nil, "utility global functions are not ready (load util.lua first)"
+  end
+
+  if type(_G.rs485_connect) ~= "function" then
+    return nil, "global function rs485_connect is not defined"
+  end
+
+  local ok, err = _G.rs485_connect(cfg.baud)
   if not ok then
-    close_rs485()
+    _G.rs485_safe_close()
     return nil, "failed to open rs485: " .. tostring(err)
   end
 
   local result, read_err = Flow.read_values(cfg)
-  close_rs485()
+  _G.rs485_safe_close()
   if not result then
     return nil, read_err
   end
