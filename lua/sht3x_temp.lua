@@ -18,21 +18,7 @@ local SHT3X_CMD_SINGLE_SHOT_HIGH = string.char(0x2C, 0x06)
 local SHT3X_CMD_SINGLE_SHOT_MED  = string.char(0x2C, 0x0D)
 local SHT3X_CMD_SINGLE_SHOT_LOW  = string.char(0x2C, 0x10)
 
--- CRC-8 with polynomial 0x31 (x^8 + x^5 + x^4 + 1), init 0xFF
-local function sht3x_crc8(data)
-  local crc = 0xFF
-  for i = 1, #data do
-    crc = crc ~ string.byte(data, i)
-    for _ = 1, 8 do
-      if (crc & 0x80) ~= 0 then
-        crc = ((crc << 1) ~ 0x31) & 0xFF
-      else
-        crc = (crc << 1) & 0xFF
-      end
-    end
-  end
-  return crc
-end
+local sht3x_crc8 = util_crc8
 
 local function sht3x_read_values()
   -- Send soft reset

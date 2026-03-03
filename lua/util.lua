@@ -4,6 +4,24 @@ local function util_bytes_to_hex(bytes)
   end))
 end
 
+-- CRC-8 with polynomial 0x31 (x^8 + x^5 + x^4 + 1), init 0xFF
+-- Used by SHT3x and other Sensirion sensors
+local function util_crc8(data, poly, init)
+  poly = poly or 0x31
+  local crc = init or 0xFF
+  for i = 1, #data do
+    crc = crc ~ string.byte(data, i)
+    for _ = 1, 8 do
+      if (crc & 0x80) ~= 0 then
+        crc = ((crc << 1) ~ poly) & 0xFF
+      else
+        crc = (crc << 1) & 0xFF
+      end
+    end
+  end
+  return crc
+end
+
 local function util_crc16_modbus(bytes)
   local crc = 0xFFFF
   for i = 1, #bytes do
@@ -74,6 +92,7 @@ local function util_log(cfg, tag, msg)
 end
 
 _G.util_bytes_to_hex = util_bytes_to_hex
+_G.util_crc8 = util_crc8
 _G.util_crc16_modbus = util_crc16_modbus
 _G.util_build_read_holding_request = util_build_read_holding_request
 _G.util_extract_modbus_frame = util_extract_modbus_frame
@@ -82,6 +101,7 @@ _G.util_log = util_log
 
 return {
   bytes_to_hex = util_bytes_to_hex,
+  crc8 = util_crc8,
   crc16_modbus = util_crc16_modbus,
   build_read_holding_request = util_build_read_holding_request,
   extract_modbus_frame = util_extract_modbus_frame,
