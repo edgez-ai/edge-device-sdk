@@ -34,6 +34,40 @@ def _title_from_var(var_name: str) -> str:
     return name.replace("_", " ").title()
 
 
+HA_DISCOVERY_FIELDS = (
+    "device_class",
+    "state_class",
+    "unit_of_measurement",
+    "icon",
+    "suggested_display_precision",
+)
+
+
+def _load_ha_config(path: Optional[str]) -> Dict[tuple, Dict]:
+    """Load HA discovery config file and return a dict keyed by (object, instance, resource)."""
+    if not path:
+        return {}
+    raw = Path(path).read_text(encoding="utf-8")
+    entries = json.loads(raw)
+    if not isinstance(entries, list):
+        raise SystemExit("--ha-config JSON must be a top-level array")
+    lookup: Dict[tuple, Dict] = {}
+    for entry in entries:
+        key = (entry["object"], entry["instance"], entry["resource"])
+        ha_fields = {k: v for k, v in entry.items() if k in HA_DISCOVERY_FIELDS}
+        lookup[key] = ha_fields
+    return lookup
+
+
+def _merge_ha_config(objects: List[Dict], ha_config: Dict[tuple, Dict]) -> None:
+    """Merge HA discovery fields into matching lwm2m_objects entries in-place."""
+    for obj in objects:
+        key = (obj["object"], obj["instance"], obj["resource"])
+        ha_fields = ha_config.get(key)
+        if ha_fields:
+            obj.update(ha_fields)
+
+
 def extract_lwm2m_objects(lua_text: str) -> List[Dict]:
     constants: Dict[str, int] = {}
     for line in lua_text.splitlines():
@@ -96,6 +130,15 @@ def main() -> int:
         required=True,
         help="Path to Lua script (e.g. lua/flow.lua)",
     )
+
+    # --- Mode: inject script into existing JSON ---
+    parser.add_argument(
+        "--inject-script",
+        default=None,
+        metavar="SENSOR_JSON",
+        help="Read an existing sensor JSON, update its 'script' field from --lua-file, and write it back.",
+    )
+
     parser.add_argument(
         "--name",
         default=None,
@@ -103,14 +146,19 @@ def main() -> int:
     )
     parser.add_argument(
         "--output",
-        required=True,
-        help="Output JSON file path",
+        default=None,
+        help="Output JSON file path (required unless --inject-script is used)",
     )
     parser.add_argument(
         "--script-encoding",
         choices=["raw", "base64"],
         default="raw",
         help="How to store script in JSON (default: raw)",
+    )
+    parser.add_argument(
+        "--ha-config",
+        default=None,
+        help="Path to JSON file with HA discovery fields (array of objects with object/instance/resource keys)",
     )
     parser.add_argument(
         "--fallback-object",
@@ -122,9 +170,26 @@ def main() -> int:
     args = parser.parse_args()
 
     lua_path = Path(args.lua_file)
-    output_path = Path(args.output)
-
     lua_text = lua_path.read_text(encoding="utf-8")
+
+    # --- Inject-script mode: update script field in existing JSON and exit ---
+    if args.inject_script:
+        json_path = Path(args.inject_script)
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+
+        if args.script_encoding == "base64":
+            payload["script"] = base64.b64encode(lua_text.encode("utf-8")).decode("ascii")
+        else:
+            payload["script"] = lua_text
+
+        json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        print(f"Injected script from {lua_path} into {json_path}")
+        return 0
+
+    # --- Build mode: generate JSON from scratch ---
+    if not args.output:
+        raise SystemExit("--output is required when not using --inject-script")
+    output_path = Path(args.output)
     lwm2m_objects = extract_lwm2m_objects(lua_text)
 
     if not lwm2m_objects and args.fallback_object:
@@ -150,6 +215,10 @@ def main() -> int:
             "Could not auto-detect any lwm2m_objects from Lua script. "
             "Use --fallback-object OBJECT:INSTANCE:RESOURCE:NAME"
         )
+
+    ha_config = _load_ha_config(args.ha_config)
+    if ha_config:
+        _merge_ha_config(lwm2m_objects, ha_config)
 
     profile_name = args.name or lua_path.stem.replace("-", " ").replace("_", " ").title()
 
