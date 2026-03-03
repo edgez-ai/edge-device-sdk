@@ -18,8 +18,6 @@ local SHT3X_CMD_SINGLE_SHOT_HIGH = string.char(0x2C, 0x06)
 local SHT3X_CMD_SINGLE_SHOT_MED  = string.char(0x2C, 0x0D)
 local SHT3X_CMD_SINGLE_SHOT_LOW  = string.char(0x2C, 0x10)
 
-local sht3x_crc8 = util_crc8
-
 local function sht3x_read_values()
   -- Send soft reset
   local ok, err = i2c_reset_rx_cursor()
@@ -79,8 +77,8 @@ local function sht3x_read_values()
   local hum_raw = (hum_hi << 8) | hum_lo
 
   -- Verify CRC
-  local temp_crc_valid = sht3x_crc8(data:sub(1, 2)) == temp_crc
-  local hum_crc_valid = sht3x_crc8(data:sub(4, 5)) == hum_crc
+  local temp_crc_valid = util_crc8(data:sub(1, 2)) == temp_crc
+  local hum_crc_valid = util_crc8(data:sub(4, 5)) == hum_crc
 
   local temperature = nil
   local humidity = nil
