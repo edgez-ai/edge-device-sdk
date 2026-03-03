@@ -1,128 +1,23 @@
 #!/usr/bin/env lua
 
-local RS485_OBJECT_ID = 10252
-local RS485_RESOURCES = {
-  open_state = 2,
-  baudrate = 7,
-  modbus_unit_id = 8,
-  mode = 9,
-  tx_payload = 14,
-  rx_buffer_pos = 15,
-  rx_chunk = 16,
-  rx_buffer_size = 17,
-  tx_pin = 18,
-  rx_pin = 19,
-}
-
-local function shell_quote(value)
-  local s = tostring(value or "")
-  s = s:gsub("'", "'\\''")
-  return "'" .. s .. "'"
+local function add_script_path()
+  local script = (arg and arg[0]) or ""
+  local dir = script:match("^(.*)/[^/]+$")
+  if dir and dir ~= "" then
+    package.path = dir .. "/?.lua;" .. package.path
+  end
 end
 
-local function read_all(path, mode)
-  local f = io.open(path, mode or "rb")
-  if not f then
-    return nil
+local function load_rs485_module()
+  local ok, mod = pcall(require, "rs485_interface")
+  if ok and type(mod) == "table" and type(mod.new) == "function" then
+    return mod
   end
-  local data = f:read("*a")
-  f:close()
-  return data
+  error("failed to load rs485_interface.lua")
 end
 
-local function run_capture(cmd)
-  local tmp = os.tmpname()
-  local full = cmd .. " > " .. shell_quote(tmp) .. " 2>&1"
-  local ok, _, code = os.execute(full)
-  local out = read_all(tmp, "rb") or ""
-  os.remove(tmp)
-  if ok == true or code == 0 then
-    return true, out
-  end
-  return false, out
-end
-
-local function sleep_s(seconds)
-  os.execute(string.format("sleep %.3f", seconds))
-end
-
-local function base64_decode(input)
-  local b = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-  input = input:gsub('[^' .. b .. '=]', '')
-  return (input:gsub('.', function(x)
-    if x == '=' then
-      return ''
-    end
-    local r, f = '', (b:find(x, 1, true) or 1) - 1
-    for i = 6, 1, -1 do
-      r = r .. ((f % 2 ^ i - f % 2 ^ (i - 1) > 0) and '1' or '0')
-    end
-    return r
-  end):gsub('%d%d%d?%d?%d?%d?%d?%d?', function(x)
-    if #x ~= 8 then
-      return ''
-    end
-    local c = 0
-    for i = 1, 8 do
-      if x:sub(i, i) == '1' then
-        c = c + 2 ^ (8 - i)
-      end
-    end
-    return string.char(c)
-  end))
-end
-
-local function json_unescape(s)
-  s = s:gsub('\\"', '"')
-  s = s:gsub('\\/', '/')
-  s = s:gsub('\\n', '\n')
-  s = s:gsub('\\r', '\r')
-  s = s:gsub('\\t', '\t')
-  s = s:gsub('\\\\', '\\')
-  return s
-end
-
-local function decode_response_payload(raw)
-  if not raw or #raw == 0 then
-    return ""
-  end
-  local first = raw:sub(1, 1)
-  if first ~= "{" and first ~= "[" then
-    return raw
-  end
-
-  local vd = raw:match('"vd"%s*:%s*"([^"]*)"')
-  if vd then
-    return base64_decode(json_unescape(vd))
-  end
-
-  local data = raw:match('"data"%s*:%s*"([^"]*)"')
-  if data then
-    return base64_decode(json_unescape(data))
-  end
-
-  local value = raw:match('"value"%s*:%s*"([^"]*)"')
-  if value then
-    local v = json_unescape(value)
-    local decoded = base64_decode(v)
-    if #decoded > 0 then
-      return decoded
-    end
-    return v
-  end
-
-  local content = raw:match('"content"%s*:%s*"([^"]*)"')
-  if content then
-    local v = json_unescape(content)
-    local decoded = base64_decode(v)
-    if #decoded > 0 then
-      return decoded
-    end
-    return v
-  end
-
-  return ""
-end
+add_script_path()
+local RS485 = load_rs485_module()
 
 local function bytes_to_hex(bytes)
   return (bytes:gsub('.', function(c)
@@ -193,6 +88,7 @@ end
 
 local function parse_args(argv)
   local args = {
+    backend = "auto",
     base_url = "http://192.168.10.177:8088",
     instance = 0,
     baud = 4800,
@@ -218,6 +114,8 @@ local function parse_args(argv)
 
     if a == "--client" or a == "-c" then
       args.client = next_value()
+    elseif a == "--backend" then
+      args.backend = next_value()
     elseif a == "--base-url" or a == "-u" then
       args.base_url = next_value()
     elseif a == "--instance" or a == "-i" then
@@ -269,8 +167,9 @@ local function print_usage()
   print("  lua lua/modbus_rtu_rest.lua --client B43A45A45A08 --base-url http://192.168.10.105:8088 --action flow --baud 9600")
   print("")
   print("Options:")
-  print("  --client, -c         LwM2M endpoint (required)")
-  print("  --base-url, -u       REST base URL (default: http://192.168.10.177:8088)")
+  print("  --backend            auto|rest|native (default: auto)")
+  print("  --client, -c         LwM2M endpoint (required for --backend rest)")
+  print("  --base-url, -u       REST base URL (used by --backend rest)")
   print("  --action             Only 'flow' is supported in this Lua version")
   print("  --baud, -b           RS485 baud (default: 4800)")
   print("  --unit-id            Modbus unit ID (default: 1)")
@@ -280,151 +179,41 @@ local function print_usage()
   print("  --modbus-timeout     Modbus timeout seconds (default: 1.0)")
 end
 
-local function build_resource_url(cfg, res_id)
-  return string.format(
-    "%s/api/clients/%s/%d/%d/%d",
-    cfg.base_url:gsub("/+$", ""),
-    cfg.client,
-    RS485_OBJECT_ID,
-    cfg.instance,
-    res_id
-  )
-end
-
-local function curl_put_text(cfg, res_id, value)
-  local url = build_resource_url(cfg, res_id)
-  local cmd = string.format(
-    "curl -fsS -m %s -X PUT -H %s --data-binary %s %s",
-    tostring(cfg.http_timeout),
-    shell_quote("Content-Type: text/plain"),
-    shell_quote(tostring(value)),
-    shell_quote(url)
-  )
-  local ok, out = run_capture(cmd)
-  if not ok then
-    return false, out
-  end
-  return true
-end
-
-local function curl_put_bytes(cfg, res_id, payload)
-  local url = build_resource_url(cfg, res_id)
-  local tmp = os.tmpname()
-  local f = io.open(tmp, "wb")
-  if not f then
-    return false, "failed to create temp file"
-  end
-  f:write(payload)
-  f:close()
-
-  local cmd = string.format(
-    "curl -fsS -m %s -X PUT -H %s --data-binary @%s %s",
-    tostring(cfg.http_timeout),
-    shell_quote("Content-Type: application/octet-stream"),
-    shell_quote(tmp),
-    shell_quote(url)
-  )
-  local ok, out = run_capture(cmd)
-  os.remove(tmp)
-  if not ok then
-    return false, out
-  end
-  return true
-end
-
-local function curl_get(cfg, res_id, accept_octet)
-  local url = build_resource_url(cfg, res_id)
-  local header = accept_octet and ("-H " .. shell_quote("Accept: application/octet-stream")) or ""
-  local cmd = string.format(
-    "curl -fsS -m %s %s %s",
-    tostring(cfg.http_timeout),
-    header,
-    shell_quote(url)
-  )
-  local ok, out = run_capture(cmd)
-  if not ok then
-    return false, out
-  end
-  return true, out
-end
-
 local function log(cfg, msg)
   if not cfg.quiet then
     io.stderr:write("[ModbusRTU] " .. msg .. "\n")
   end
 end
 
-local function write_res(cfg, name, value)
-  local res = RS485_RESOURCES[name]
-  if not res then
-    return true
-  end
-  local ok, err = curl_put_text(cfg, res, value)
-  if not ok then
-    return false, err
-  end
-  sleep_s(0.05)
-  return true
-end
-
-local function connect_rs485(cfg)
-  local ok, err
-  ok, err = write_res(cfg, "open_state", "false")
-  if not ok then return false, err end
-  sleep_s(0.1)
-
-  if cfg.tx_pin ~= nil then
-    ok, err = write_res(cfg, "tx_pin", cfg.tx_pin)
-    if not ok then return false, err end
-  end
-  if cfg.rx_pin ~= nil then
-    ok, err = write_res(cfg, "rx_pin", cfg.rx_pin)
-    if not ok then return false, err end
-  end
-
-  ok, err = write_res(cfg, "baudrate", cfg.baud)
+local function connect_rs485(cfg, rs485)
+  local ok, err = rs485:configure(cfg)
   if not ok then return false, err end
 
-  ok, err = write_res(cfg, "rx_buffer_size", cfg.rx_size)
+  ok, err = rs485:open()
   if not ok then return false, err end
 
-  ok, err = write_res(cfg, "modbus_unit_id", cfg.unit_id)
-  if not ok then return false, err end
-
-  ok, err = write_res(cfg, "mode", cfg.rs485_mode)
-  if not ok then return false, err end
-
-  ok, err = write_res(cfg, "open_state", "true")
-  if not ok then return false, err end
-
-  ok, err = write_res(cfg, "rx_buffer_pos", 0)
+  ok, err = rs485:reset_rx_cursor()
   if not ok then return false, err end
 
   return true
 end
 
-local function close_rs485(cfg)
-  write_res(cfg, "open_state", "false")
-end
-
-local function read_rx_chunk(cfg)
-  local ok, out = curl_get(cfg, RS485_RESOURCES.rx_chunk, true)
-  if not ok then
-    return ""
+local function close_rs485(rs485)
+  if rs485 and rs485.close then
+    rs485:close()
   end
-  return decode_response_payload(out)
 end
 
-local function read_holding_registers(cfg, address, count)
+local function read_holding_registers(cfg, rs485, address, count)
   local request = build_read_holding_request(cfg.unit_id, address, count)
   log(cfg, "TX Read Holding Registers: " .. bytes_to_hex(request))
 
-  local ok, err = write_res(cfg, "rx_buffer_pos", 0)
+  local ok, err = rs485:reset_rx_cursor()
   if not ok then
     return nil, "failed to reset rx cursor: " .. tostring(err)
   end
 
-  ok, err = curl_put_bytes(cfg, RS485_RESOURCES.tx_payload, request)
+  ok, err = rs485:write(request)
   if not ok then
     return nil, "failed to write tx payload: " .. tostring(err)
   end
@@ -434,7 +223,7 @@ local function read_holding_registers(cfg, address, count)
   local buffer = ""
 
   while os.clock() < deadline do
-    local chunk = read_rx_chunk(cfg)
+    local chunk = rs485:read_chunk()
     if chunk and #chunk > 0 then
       buffer = buffer .. chunk
       local frame = extract_frame(buffer, cfg.unit_id, 0x03, byte_count)
@@ -449,15 +238,17 @@ local function read_holding_registers(cfg, address, count)
         return regs
       end
     end
-    sleep_s(0.02)
+    if rs485.sleep then
+      rs485:sleep(0.02)
+    end
   end
 
   return nil, "No valid Modbus response frame received"
 end
 
-local function read_flow_values(cfg)
+local function read_flow_values(cfg, rs485)
   local count = cfg.count == 5 and 4 or cfg.count
-  local regs, err = read_holding_registers(cfg, cfg.address, count)
+  local regs, err = read_holding_registers(cfg, rs485, cfg.address, count)
   if not regs then
     return nil, err
   end
@@ -484,7 +275,7 @@ local function main()
     return args.invalid and 1 or 0
   end
 
-  if not args.client or args.client == "" then
+  if args.backend == "rest" and (not args.client or args.client == "") then
     io.stderr:write("--client is required\n\n")
     print_usage()
     return 1
@@ -496,6 +287,7 @@ local function main()
   end
 
   local cfg = {
+    backend = args.backend,
     client = args.client,
     base_url = args.base_url,
     instance = args.instance,
@@ -514,17 +306,23 @@ local function main()
     http_timeout = math.max(5.0, (args.modbus_timeout or 1.0) + 4.0),
   }
 
-  print(string.format("Connecting to %s as %s...", cfg.base_url, cfg.client))
+  local rs485 = RS485.new(cfg)
 
-  local ok, err = connect_rs485(cfg)
+  if cfg.client and cfg.client ~= "" then
+    print(string.format("Connecting to %s as %s...", cfg.base_url, cfg.client))
+  else
+    print("Connecting to RS485 backend...")
+  end
+
+  local ok, err = connect_rs485(cfg, rs485)
   if not ok then
     io.stderr:write("Failed to open RS485: " .. tostring(err) .. "\n")
-    close_rs485(cfg)
+    close_rs485(rs485)
     return 1
   end
 
-  local result, read_err = read_flow_values(cfg)
-  close_rs485(cfg)
+  local result, read_err = read_flow_values(cfg, rs485)
+  close_rs485(rs485)
 
   if not result then
     io.stderr:write("\n✗ Failed to read/decode flow meter values: " .. tostring(read_err) .. "\n")

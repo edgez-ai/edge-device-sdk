@@ -1,0 +1,302 @@
+local RS485_OBJECT_ID = 10252
+local RS485_RESOURCES = {
+  open_state = 2,
+  baudrate = 7,
+  modbus_unit_id = 8,
+  mode = 9,
+  tx_payload = 14,
+  rx_buffer_pos = 15,
+  rx_chunk = 16,
+  rx_buffer_size = 17,
+  tx_pin = 18,
+  rx_pin = 19,
+}
+
+local function shell_quote(value)
+  local s = tostring(value or "")
+  s = s:gsub("'", "'\\''")
+  return "'" .. s .. "'"
+end
+
+local function read_all(path, mode)
+  local f = io.open(path, mode or "rb")
+  if not f then
+    return nil
+  end
+  local data = f:read("*a")
+  f:close()
+  return data
+end
+
+local function run_capture(cmd)
+  local tmp = os.tmpname()
+  local full = cmd .. " > " .. shell_quote(tmp) .. " 2>&1"
+  local ok, _, code = os.execute(full)
+  local out = read_all(tmp, "rb") or ""
+  os.remove(tmp)
+  if ok == true or code == 0 then
+    return true, out
+  end
+  return false, out
+end
+
+local function base64_decode(input)
+  local b = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+  input = input:gsub('[^' .. b .. '=]', '')
+  return (input:gsub('.', function(x)
+    if x == '=' then
+      return ''
+    end
+    local r, f = '', (b:find(x, 1, true) or 1) - 1
+    for i = 6, 1, -1 do
+      r = r .. ((f % 2 ^ i - f % 2 ^ (i - 1) > 0) and '1' or '0')
+    end
+    return r
+  end):gsub('%d%d%d?%d?%d?%d?%d?%d?', function(x)
+    if #x ~= 8 then
+      return ''
+    end
+    local c = 0
+    for i = 1, 8 do
+      if x:sub(i, i) == '1' then
+        c = c + 2 ^ (8 - i)
+      end
+    end
+    return string.char(c)
+  end))
+end
+
+local function json_unescape(s)
+  s = s:gsub('\\"', '"')
+  s = s:gsub('\\/', '/')
+  s = s:gsub('\\n', '\n')
+  s = s:gsub('\\r', '\r')
+  s = s:gsub('\\t', '\t')
+  s = s:gsub('\\\\', '\\')
+  return s
+end
+
+local function decode_response_payload(raw)
+  if not raw or #raw == 0 then
+    return ""
+  end
+  local first = raw:sub(1, 1)
+  if first ~= "{" and first ~= "[" then
+    return raw
+  end
+
+  local vd = raw:match('"vd"%s*:%s*"([^"]*)"')
+  if vd then
+    return base64_decode(json_unescape(vd))
+  end
+
+  local data = raw:match('"data"%s*:%s*"([^"]*)"')
+  if data then
+    return base64_decode(json_unescape(data))
+  end
+
+  local value = raw:match('"value"%s*:%s*"([^"]*)"')
+  if value then
+    local v = json_unescape(value)
+    local decoded = base64_decode(v)
+    if #decoded > 0 then
+      return decoded
+    end
+    return v
+  end
+
+  local content = raw:match('"content"%s*:%s*"([^"]*)"')
+  if content then
+    local v = json_unescape(content)
+    local decoded = base64_decode(v)
+    if #decoded > 0 then
+      return decoded
+    end
+    return v
+  end
+
+  return ""
+end
+
+local function busy_sleep(seconds)
+  local wait = tonumber(seconds) or 0
+  if wait <= 0 then
+    return
+  end
+  local deadline = os.clock() + wait
+  while os.clock() < deadline do
+  end
+end
+
+local RestBackend = {}
+RestBackend.__index = RestBackend
+
+function RestBackend:new(cfg)
+  local obj = {
+    cfg = {
+      base_url = cfg.base_url,
+      client = cfg.client,
+      instance = cfg.instance or 0,
+      http_timeout = cfg.http_timeout or 5.0,
+    },
+  }
+  return setmetatable(obj, RestBackend)
+end
+
+function RestBackend:build_resource_url(res_id)
+  return string.format(
+    "%s/api/clients/%s/%d/%d/%d",
+    tostring(self.cfg.base_url or ""):gsub("/+$", ""),
+    tostring(self.cfg.client or ""),
+    RS485_OBJECT_ID,
+    tonumber(self.cfg.instance) or 0,
+    res_id
+  )
+end
+
+function RestBackend:put_text(res_id, value)
+  local url = self:build_resource_url(res_id)
+  local cmd = string.format(
+    "curl -fsS -m %s -X PUT -H %s --data-binary %s %s",
+    tostring(self.cfg.http_timeout),
+    shell_quote("Content-Type: text/plain"),
+    shell_quote(tostring(value)),
+    shell_quote(url)
+  )
+  local ok, out = run_capture(cmd)
+  if not ok then
+    return false, out
+  end
+  return true
+end
+
+function RestBackend:put_bytes(res_id, payload)
+  local url = self:build_resource_url(res_id)
+  local tmp = os.tmpname()
+  local f = io.open(tmp, "wb")
+  if not f then
+    return false, "failed to create temp file"
+  end
+  f:write(payload)
+  f:close()
+
+  local cmd = string.format(
+    "curl -fsS -m %s -X PUT -H %s --data-binary @%s %s",
+    tostring(self.cfg.http_timeout),
+    shell_quote("Content-Type: application/octet-stream"),
+    shell_quote(tmp),
+    shell_quote(url)
+  )
+  local ok, out = run_capture(cmd)
+  os.remove(tmp)
+  if not ok then
+    return false, out
+  end
+  return true
+end
+
+function RestBackend:get_payload(res_id)
+  local url = self:build_resource_url(res_id)
+  local cmd = string.format(
+    "curl -fsS -m %s -H %s %s",
+    tostring(self.cfg.http_timeout),
+    shell_quote("Accept: application/octet-stream"),
+    shell_quote(url)
+  )
+  local ok, out = run_capture(cmd)
+  if not ok then
+    return false, out
+  end
+  return true, decode_response_payload(out)
+end
+
+function RestBackend:configure(params)
+  local ok, err = self:put_text(RS485_RESOURCES.open_state, "false")
+  if not ok then return false, err end
+  busy_sleep(0.1)
+
+  if params.tx_pin ~= nil then
+    ok, err = self:put_text(RS485_RESOURCES.tx_pin, params.tx_pin)
+    if not ok then return false, err end
+  end
+  if params.rx_pin ~= nil then
+    ok, err = self:put_text(RS485_RESOURCES.rx_pin, params.rx_pin)
+    if not ok then return false, err end
+  end
+
+  ok, err = self:put_text(RS485_RESOURCES.baudrate, params.baud)
+  if not ok then return false, err end
+
+  ok, err = self:put_text(RS485_RESOURCES.rx_buffer_size, params.rx_size)
+  if not ok then return false, err end
+
+  ok, err = self:put_text(RS485_RESOURCES.modbus_unit_id, params.unit_id)
+  if not ok then return false, err end
+
+  ok, err = self:put_text(RS485_RESOURCES.mode, params.rs485_mode)
+  if not ok then return false, err end
+
+  return true
+end
+
+function RestBackend:open()
+  return self:put_text(RS485_RESOURCES.open_state, "true")
+end
+
+function RestBackend:close()
+  return self:put_text(RS485_RESOURCES.open_state, "false")
+end
+
+function RestBackend:reset_rx_cursor()
+  return self:put_text(RS485_RESOURCES.rx_buffer_pos, 0)
+end
+
+function RestBackend:write(payload)
+  return self:put_bytes(RS485_RESOURCES.tx_payload, payload)
+end
+
+function RestBackend:read_chunk()
+  local ok, out = self:get_payload(RS485_RESOURCES.rx_chunk)
+  if not ok then
+    return ""
+  end
+  return out or ""
+end
+
+function RestBackend:sleep(seconds)
+  busy_sleep(seconds)
+end
+
+local Module = {}
+
+local function new_native_backend(cfg)
+  local native = rawget(_G, "rs485")
+  if type(native) ~= "table" or type(native.new) ~= "function" then
+    return nil
+  end
+  return native.new(cfg or {})
+end
+
+function Module.new(cfg)
+  cfg = cfg or {}
+  local backend = cfg.backend
+
+  if backend == "native" then
+    local native = new_native_backend(cfg)
+    if native then
+      return native
+    end
+    error("native rs485 backend requested but not available")
+  end
+
+  if backend ~= "rest" then
+    local native = new_native_backend(cfg)
+    if native then
+      return native
+    end
+  end
+
+  return RestBackend:new(cfg)
+end
+
+return Module
