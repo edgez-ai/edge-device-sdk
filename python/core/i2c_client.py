@@ -219,7 +219,12 @@ class I2CSession:
         self.endpoint = endpoint
         self.instance = instance
 
-    def open(self, addr: int) -> None:
+    def open(self, addr: int, *, tx_pin: Optional[int] = None, rx_pin: Optional[int] = None) -> None:
+        self.client.i2c_set_open(self.endpoint, self.instance, False)
+        if tx_pin is not None:
+            self.client.write_resource(self.endpoint, I2C_OBJECT_ID, self.instance, I2C_RESOURCES["tx_pin"], tx_pin)
+        if rx_pin is not None:
+            self.client.write_resource(self.endpoint, I2C_OBJECT_ID, self.instance, I2C_RESOURCES["rx_pin"], rx_pin)
         self.client.i2c_set_address(self.endpoint, self.instance, addr)
         self.client.i2c_set_open(self.endpoint, self.instance, True)
         self.client.i2c_reset_cursor(self.endpoint, self.instance)

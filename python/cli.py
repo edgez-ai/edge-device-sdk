@@ -19,7 +19,7 @@ from core import (
     UartSession,
     pick_client,
 )
-from driver import FlowMeter, FlowMeterConfig, VC0706Camera, read_ens210, read_sht3x
+from driver import FlowMeter, FlowMeterConfig, VC0706Camera, read_aht20, read_ens210, read_sht3x
 
 
 def parse_byte_list(text: str) -> Sequence[int]:
@@ -41,19 +41,33 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_ens = mode.add_parser("ens210", help="Read ENS210 temperature/humidity")
     p_ens.add_argument("--addr", type=lambda x: int(x, 0), default=0x43, help="I2C address (default 0x43)")
+    p_ens.add_argument("--tx-pin", type=int, help="I2C TX pin")
+    p_ens.add_argument("--rx-pin", type=int, help="I2C RX pin")
     p_ens.add_argument("--delay", type=float, default=0.15, help="Measurement wait time seconds")
     p_ens.add_argument("--interval", type=float, default=0.0, help="Poll interval seconds; 0 for one-shot")
     p_ens.add_argument("--count", type=int, default=0, help="Number of polls when interval>0; 0 for forever")
 
     p_sht3x = mode.add_parser("sht3x", help="Read SHT3x temperature/humidity")
     p_sht3x.add_argument("--addr", type=lambda x: int(x, 0), default=0x44, help="I2C address (default 0x44)")
+    p_sht3x.add_argument("--tx-pin", type=int, help="I2C TX pin")
+    p_sht3x.add_argument("--rx-pin", type=int, help="I2C RX pin")
     p_sht3x.add_argument("--repeatability", choices=["high", "med", "low"], default="high", help="Measurement repeatability")
     p_sht3x.add_argument("--delay", type=float, default=0.001, help="Measurement wait time seconds")
     p_sht3x.add_argument("--interval", type=float, default=0.0, help="Poll interval seconds; 0 for one-shot")
     p_sht3x.add_argument("--count", type=int, default=0, help="Number of polls when interval>0; 0 for forever")
 
+    p_aht20 = mode.add_parser("aht20", help="Read AHT20 temperature/humidity")
+    p_aht20.add_argument("--addr", type=lambda x: int(x, 0), default=0x38, help="I2C address (default 0x38)")
+    p_aht20.add_argument("--tx-pin", type=int, help="I2C TX pin")
+    p_aht20.add_argument("--rx-pin", type=int, help="I2C RX pin")
+    p_aht20.add_argument("--delay", type=float, default=0.08, help="Measurement wait time seconds")
+    p_aht20.add_argument("--interval", type=float, default=0.0, help="Poll interval seconds; 0 for one-shot")
+    p_aht20.add_argument("--count", type=int, default=0, help="Number of polls when interval>0; 0 for forever")
+
     p_raw = mode.add_parser("raw", help="Manual I2C transaction")
     p_raw.add_argument("--addr", type=lambda x: int(x, 0), required=True, help="I2C address")
+    p_raw.add_argument("--tx-pin", type=int, help="I2C TX pin")
+    p_raw.add_argument("--rx-pin", type=int, help="I2C RX pin")
     p_raw.add_argument("--write", type=str, required=True, help="Bytes to write, e.g. 0x22,0x03 or 34,3")
     p_raw.add_argument("--read", type=int, default=0, help="Bytes to read after write")
 
@@ -103,7 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run_raw(args: argparse.Namespace, session: I2CSession, client: Lwm2mRestClient, endpoint: str) -> None:
-    session.open(args.addr)
+    session.open(args.addr, tx_pin=getattr(args, "tx_pin", None), rx_pin=getattr(args, "rx_pin", None))
     if args.read > 0:
         client.i2c_set_rx_size(endpoint, args.instance, args.read)
     session.write(parse_byte_list(args.write))
@@ -119,7 +133,7 @@ def run_ens210(args: argparse.Namespace, session: I2CSession, endpoint: str) -> 
     delay = getattr(args, "delay", 0.15)
     interval = getattr(args, "interval", 0.0)
     count = getattr(args, "count", 0)
-    session.open(addr)
+    session.open(addr, tx_pin=getattr(args, "tx_pin", None), rx_pin=getattr(args, "rx_pin", None))
 
     def _once() -> None:
         result = read_ens210(session, delay_s=delay)
@@ -143,10 +157,33 @@ def run_sht3x(args: argparse.Namespace, session: I2CSession, endpoint: str) -> N
     delay = getattr(args, "delay", 0.001)
     interval = getattr(args, "interval", 0.0)
     count = getattr(args, "count", 0)
-    session.open(addr)
+    session.open(addr, tx_pin=getattr(args, "tx_pin", None), rx_pin=getattr(args, "rx_pin", None))
 
     def _once() -> None:
         result = read_sht3x(session, repeatability=repeatability, delay_s=delay)
+        print({"time": datetime.now(timezone.utc).isoformat(), "endpoint": endpoint, **result})
+
+    if interval > 0:
+        iterations = 0
+        while True:
+            _once()
+            iterations += 1
+            if count > 0 and iterations >= count:
+                break
+            time.sleep(interval)
+    else:
+        _once()
+
+
+def run_aht20(args: argparse.Namespace, session: I2CSession, endpoint: str) -> None:
+    addr = getattr(args, "addr", 0x38)
+    delay = getattr(args, "delay", 0.08)
+    interval = getattr(args, "interval", 0.0)
+    count = getattr(args, "count", 0)
+    session.open(addr, tx_pin=getattr(args, "tx_pin", None), rx_pin=getattr(args, "rx_pin", None))
+
+    def _once() -> None:
+        result = read_aht20(session, delay_s=delay)
         print({"time": datetime.now(timezone.utc).isoformat(), "endpoint": endpoint, **result})
 
     if interval > 0:
@@ -297,6 +334,10 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         run_raw(args, session, client, endpoint)
     elif args.mode == "sht3x":
         run_sht3x(args, session, endpoint)
+    elif args.mode == "aht20":
+        run_aht20(args, session, endpoint)
+    elif args.mode == "ens210":
+        run_ens210(args, session, endpoint)
     elif args.mode == "vc0706":
         iface = getattr(args, "iface", "uart")
         if iface == "rs485":
@@ -344,7 +385,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             )
         run_flow(args, uart_session, endpoint)
     else:
-        run_ens210(args, session, endpoint)
+        raise RuntimeError(f"Unsupported mode: {args.mode}")
 
 
 if __name__ == "__main__":
