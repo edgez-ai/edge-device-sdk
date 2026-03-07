@@ -47,6 +47,7 @@ local function parse_args(argv)
   for k, v in pairs(cfg_defaults) do
     cfg[k] = v
   end
+  local script_set = false
 
   local i = 1
   while i <= #argv do
@@ -64,10 +65,14 @@ local function parse_args(argv)
       cfg.backend = next_value()
     elseif a == "--script" or a == "-s" then
       cfg.script = next_value()
+      script_set = true
     elseif a == "--i2c-address" then
       cfg.i2c_address = tonumber(next_value())
     elseif a == "--help" or a == "-h" then
       cfg.help = true
+    elseif type(a) == "string" and a:sub(1, 1) ~= "-" and not script_set then
+      cfg.script = a
+      script_set = true
     else
       io.stderr:write("Unknown argument: " .. tostring(a) .. "\n")
       cfg.invalid = true
