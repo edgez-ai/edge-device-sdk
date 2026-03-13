@@ -142,6 +142,43 @@ local function table_keys_sorted(tbl)
   return keys
 end
 
+local function persist_script_buffers(result, cfg, script_name)
+  local has_buffer = false
+  for _, item in ipairs(result) do
+    if type(item) == "table" and item.persist_buffer == true then
+      has_buffer = true
+      local output_path = item.output or cfg.output
+
+      if type(util_get_global_buffer) ~= "function" then
+        return false, "util_get_global_buffer is not available"
+      end
+
+      local payload = util_get_global_buffer(true)
+      if type(payload) ~= "string" or #payload == 0 then
+        return false, "global buffer is empty"
+      end
+
+      local f, io_err = io.open(output_path, "wb")
+      if not f then
+        return false, "failed to open output file '" .. tostring(output_path) .. "': " .. tostring(io_err)
+      end
+      f:write(payload)
+      f:close()
+
+      item.output = output_path
+      item.bytes = #payload
+      item.persisted = true
+
+      print("Saved global buffer to " .. tostring(output_path) .. " (" .. tostring(#payload) .. " bytes)")
+    end
+  end
+
+  if not has_buffer then
+    return true
+  end
+  return true
+end
+
 local function main()
   local cfg = parse_args(arg)
   if cfg.help then
@@ -207,6 +244,12 @@ local function main()
 
   if type(result) ~= "table" then
     io.stderr:write("\n✗ Unexpected result payload type: " .. type(result) .. "\n")
+    return 1
+  end
+
+  local persist_ok, persist_err = persist_script_buffers(result, cfg, script_name)
+  if not persist_ok then
+    io.stderr:write("\n✗ Failed to persist script buffer: " .. tostring(persist_err) .. "\n")
     return 1
   end
 

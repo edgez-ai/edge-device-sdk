@@ -270,17 +270,6 @@ local function read_frame_buffer(length, max_retries)
   return table.concat(chunks)
 end
 
-local function save_image(data, path)
-  local f, err = io.open(path, "wb")
-  if not f then
-    return false, err
-  end
-  f:write(data)
-  f:close()
-  print("Saved image: " .. path .. " (" .. tostring(#data) .. " bytes)")
-  return true
-end
-
 local function reset_camera()
   local ok, err = send_command(CMD_RESET, "", "RESET")
   if not ok then
@@ -380,17 +369,20 @@ local function run_action()
       return false, "capture failed: " .. tostring(cap_err)
     end
 
-    local save_ok, save_err = save_image(image, cam_output)
-    if not save_ok then
+    if type(util_init_global_buffer) ~= "function" or type(util_append_global_buffer) ~= "function" then
       rs485_safe_close()
-      return false, "save failed: " .. tostring(save_err)
+      return false, "util global buffer helpers are not available"
     end
 
+    util_init_global_buffer()
+    util_append_global_buffer(image)
+
     success = true
-    msg = "capture complete"
+    msg = "capture buffered"
     extra = {
       output = cam_output,
       bytes = #image,
+      persist_buffer = true,
     }
   else
     rs485_safe_close()
@@ -415,6 +407,7 @@ table.insert(result, {
   message = tostring(message or "success"),
   output = extra and extra.output or nil,
   bytes = extra and extra.bytes or nil,
+  persist_buffer = extra and extra.persist_buffer or nil,
 })
 
 return result

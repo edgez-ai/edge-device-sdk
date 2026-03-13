@@ -91,6 +91,46 @@ local function util_log(cfg, tag, msg)
   io.stderr:write("[" .. prefix .. "] " .. tostring(msg or "") .. "\n")
 end
 
+local util_global_buffer = { chunks = {}, size = 0 }
+
+local function util_init_global_buffer()
+  util_global_buffer = { chunks = {}, size = 0 }
+  return true
+end
+
+local function util_append_global_buffer(data)
+  local buf = util_global_buffer
+
+  local chunk = data
+  if type(chunk) ~= "string" then
+    chunk = tostring(chunk or "")
+  end
+
+  if #chunk > 0 then
+    buf.chunks[#buf.chunks + 1] = chunk
+    buf.size = buf.size + #chunk
+  end
+
+  return buf.size
+end
+
+local function util_get_global_buffer(clear_after_read)
+  local data = table.concat(util_global_buffer.chunks)
+  if clear_after_read then
+    util_global_buffer = { chunks = {}, size = 0 }
+  end
+  return data
+end
+
+local function util_global_buffer_size()
+  return util_global_buffer.size or 0
+end
+
+local function util_clear_global_buffer()
+  util_global_buffer = { chunks = {}, size = 0 }
+  return true
+end
+
 _G.util_bytes_to_hex = util_bytes_to_hex
 _G.util_crc8 = util_crc8
 _G.util_crc16_modbus = util_crc16_modbus
@@ -98,6 +138,11 @@ _G.util_build_read_holding_request = util_build_read_holding_request
 _G.util_extract_modbus_frame = util_extract_modbus_frame
 _G.util_decode_bcd_32 = util_decode_bcd_32
 _G.util_log = util_log
+_G.util_init_global_buffer = util_init_global_buffer
+_G.util_append_global_buffer = util_append_global_buffer
+_G.util_get_global_buffer = util_get_global_buffer
+_G.util_global_buffer_size = util_global_buffer_size
+_G.util_clear_global_buffer = util_clear_global_buffer
 
 return {
   bytes_to_hex = util_bytes_to_hex,
@@ -107,4 +152,9 @@ return {
   extract_modbus_frame = util_extract_modbus_frame,
   decode_bcd_32 = util_decode_bcd_32,
   log = util_log,
+  init_global_buffer = util_init_global_buffer,
+  append_global_buffer = util_append_global_buffer,
+  get_global_buffer = util_get_global_buffer,
+  global_buffer_size = util_global_buffer_size,
+  clear_global_buffer = util_clear_global_buffer,
 }
