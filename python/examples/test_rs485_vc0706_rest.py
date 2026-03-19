@@ -127,6 +127,8 @@ class VC0706RestCamera:
     # Capture limits
     READ_CHUNK_SIZE = 256
     MAX_FRAME_SIZE = 500000
+    COMMAND_INTERVAL_S = 0.2
+    CONTROL_MAX_POLLS = 3
     
     def __init__(
         self,
@@ -207,7 +209,13 @@ class VC0706RestCamera:
         """
         return bytes([0x56, self.SERIAL_NUM, cmd, len(args)]) + args
     
-    def _send_command(self, cmd: int, args: bytes = b'', label: str = "") -> bool:
+    def _send_command(
+        self,
+        cmd: int,
+        args: bytes = b'',
+        label: str = "",
+        post_write_delay: float | None = None,
+    ) -> bool:
         """
         Send a command to the camera.
         
@@ -228,6 +236,9 @@ class VC0706RestCamera:
             # Reset cursor before sending to clear any old data
             self.session.reset_cursor()
             self.session.write(packet)
+            delay = self.COMMAND_INTERVAL_S if post_write_delay is None else post_write_delay
+            if delay > 0:
+                time.sleep(delay)
             return True
         except Exception as e:
             self._log(f"Error sending command: {e}")
@@ -322,6 +333,55 @@ class VC0706RestCamera:
                 response[1] == self.SERIAL_NUM and 
                 response[2] == cmd and 
                 response[3] == 0x00)
+
+    def _find_ack_offset(self, response: bytes, cmd: int) -> int:
+        """Find VC0706 ACK frame offset for a command inside a noisy response."""
+        if len(response) < 4:
+            return -1
+
+        for idx in range(0, len(response) - 3):
+            if response[idx] != 0x76:
+                continue
+            if response[idx + 2] != cmd:
+                continue
+            # status byte 0x00 is normal ACK; some variants may emit 0x01 payload indicator
+            if response[idx + 3] in (0x00, 0x01):
+                return idx
+
+        return -1
+
+    def _poll_for_ack(
+        self,
+        *,
+        cmd: int,
+        label: str,
+        timeout: float = 2.5,
+        max_len: int = 256,
+        max_attempts: int | None = None,
+        inter_attempt_delay: float | None = None,
+    ) -> tuple[int, bytes]:
+        attempts = max_attempts or self.CONTROL_MAX_POLLS
+        delay = self.COMMAND_INTERVAL_S if inter_attempt_delay is None else inter_attempt_delay
+        last_response = b""
+
+        for attempt in range(1, attempts + 1):
+            response = self._read_response(timeout=timeout, max_len=max_len)
+            last_response = response
+            ack_offset = self._find_ack_offset(response, cmd)
+            if ack_offset >= 0:
+                if ack_offset > 0:
+                    self._log(f"{label} ACK found at offset {ack_offset}; ignored leading bytes")
+                return ack_offset, response
+
+            if response:
+                self._log(f"{label} poll {attempt}/{attempts} without ACK, response: {response.hex()}")
+            else:
+                self._log(f"{label} poll {attempt}/{attempts}: no response")
+
+            if attempt < attempts and delay > 0:
+                time.sleep(delay)
+
+        return -1, last_response
     
     def get_version(self) -> Optional[str]:
         """
@@ -341,11 +401,16 @@ class VC0706RestCamera:
         
         # Response: 76 00 11 00 [version string]
         # PTC2M0 cameras return longer ASCII responses, so read more
-        response = self._read_response(timeout=2.0, max_len=256)
-        
-        if len(response) >= 5 and self._verify_response(response, self.CMD_GET_VERSION):
+        ack_offset, response = self._poll_for_ack(
+            cmd=self.CMD_GET_VERSION,
+            label="GET_VERSION",
+            timeout=2.5,
+            max_len=256,
+        )
+
+        if ack_offset >= 0 and len(response) >= (ack_offset + 6):
             # Version string follows the header
-            version = response[5:].decode('ascii', errors='ignore').strip('\x00\r\n')
+            version = response[ack_offset + 5:].decode('ascii', errors='ignore').strip('\x00\r\n')
             print(f"Camera version: {version}")
             return version
         
@@ -371,24 +436,34 @@ class VC0706RestCamera:
         if not self._send_command(self.CMD_FBUF_CTRL, bytes([self.FBUF_STOP_FRAME]), label="STOP_FRAME"):
             return False
 
-        response = self._read_response(timeout=2.0, max_len=64)
-        if len(response) >= 5 and self._verify_response(response, self.CMD_FBUF_CTRL):
+        ack_offset, _ = self._poll_for_ack(
+            cmd=self.CMD_FBUF_CTRL,
+            label="STOP_FRAME",
+            timeout=2.5,
+            max_len=128,
+        )
+        if ack_offset >= 0:
             self._log("Frame stopped")
             return True
 
-        return len(response) > 0
+        return False
 
     def resume_frame(self) -> bool:
         self._log("Resuming frame capture...")
         if not self._send_command(self.CMD_FBUF_CTRL, bytes([self.FBUF_RESUME_FRAME]), label="RESUME_FRAME"):
             return False
 
-        response = self._read_response(timeout=1.0, max_len=64)
-        if len(response) >= 5 and self._verify_response(response, self.CMD_FBUF_CTRL):
+        ack_offset, _ = self._poll_for_ack(
+            cmd=self.CMD_FBUF_CTRL,
+            label="RESUME_FRAME",
+            timeout=2.0,
+            max_len=128,
+        )
+        if ack_offset >= 0:
             self._log("Frame resumed")
             return True
 
-        return len(response) > 0
+        return False
 
     def get_frame_buffer_length(self) -> int:
         self._log("Getting frame buffer length...")
@@ -396,9 +471,19 @@ class VC0706RestCamera:
         if not self._send_command(self.CMD_GET_FBUF_LEN, bytes([0x00]), label="GET_FBUF_LEN"):
             return 0
 
-        response = self._read_response(timeout=2.0, max_len=64)
-        if len(response) >= 9 and self._verify_response(response, self.CMD_GET_FBUF_LEN):
-            length = (response[5] << 24) | (response[6] << 16) | (response[7] << 8) | response[8]
+        ack_offset, response = self._poll_for_ack(
+            cmd=self.CMD_GET_FBUF_LEN,
+            label="GET_FBUF_LEN",
+            timeout=2.5,
+            max_len=128,
+        )
+        if ack_offset >= 0 and len(response) >= (ack_offset + 9):
+            length = (
+                (response[ack_offset + 5] << 24)
+                | (response[ack_offset + 6] << 16)
+                | (response[ack_offset + 7] << 8)
+                | response[ack_offset + 8]
+            )
             self._log(f"Frame buffer length: {length} bytes")
             return length
 
@@ -430,14 +515,20 @@ class VC0706RestCamera:
 
             response = b""
             for attempt in range(1, max_retries + 1):
-                if not self._send_command(self.CMD_READ_FBUF, args, label=f"READ_FBUF@{offset}#{attempt}"):
+                if not self._send_command(
+                    self.CMD_READ_FBUF,
+                    args,
+                    label=f"READ_FBUF@{offset}#{attempt}",
+                    post_write_delay=0.0,
+                ):
                     continue
                 response = self._read_response(
                     timeout=4.0,
                     max_len=chunk_size + 10,
                     expected_len=chunk_size + 10,
                 )
-                if len(response) >= (5 + chunk_size) and self._verify_response(response, self.CMD_READ_FBUF):
+                ack_offset = self._find_ack_offset(response, self.CMD_READ_FBUF)
+                if ack_offset >= 0 and len(response) >= (ack_offset + 5 + chunk_size):
                     break
                 self._log(
                     f"Retry chunk offset {offset} attempt {attempt}/{max_retries}, got {len(response)} bytes"
@@ -447,11 +538,12 @@ class VC0706RestCamera:
                 self._log(f"Short response at offset {offset}: {len(response)} bytes")
                 return None
 
-            if not self._verify_response(response, self.CMD_READ_FBUF):
+            ack_offset = self._find_ack_offset(response, self.CMD_READ_FBUF)
+            if ack_offset < 0:
                 self._log(f"Invalid read-fbuf header at offset {offset}: {response[:8].hex()}")
                 return None
 
-            payload_start = 5
+            payload_start = ack_offset + 5
             payload_end = payload_start + chunk_size
             if len(response) < payload_end:
                 self._log(
@@ -513,9 +605,14 @@ class VC0706RestCamera:
             return False
         
         # Read acknowledgment
-        response = self._read_response(timeout=3.0)
-        
-        if len(response) >= 4:
+        ack_offset, response = self._poll_for_ack(
+            cmd=self.CMD_RESET,
+            label="RESET",
+            timeout=3.0,
+            max_len=128,
+        )
+
+        if ack_offset >= 0:
             self._log(f"Reset response: {response[:min(16, len(response))].hex()}")
             return True
         
@@ -535,22 +632,20 @@ class VC0706RestCamera:
         self._log("Setting camera resolution (56 00 31 05 04 01 00 19 00)...")
 
         args = bytes([0x04, 0x01, 0x00, 0x19, 0x00])
+        self.drain_buffer(0.2)
         if not self._send_command(self.CMD_SET_DOWNSIZE, args, label="SET_RESOLUTION"):
             return False
 
-        response = self._read_response(timeout=2.0, max_len=64)
-        if len(response) >= 5 and response[:5] == bytes([0x76, self.SERIAL_NUM, self.CMD_SET_DOWNSIZE, 0x01, 0x00]):
+        ack_offset, _ = self._poll_for_ack(
+            cmd=self.CMD_SET_DOWNSIZE,
+            label="SET_RESOLUTION",
+            timeout=2.5,
+            max_len=256,
+        )
+        if ack_offset >= 0:
             self._log("Resolution command acknowledged")
             return True
 
-        if len(response) >= 4 and self._verify_response(response, self.CMD_SET_DOWNSIZE):
-            self._log("Resolution command acknowledged")
-            return True
-
-        if response:
-            self._log(f"Resolution command response: {response.hex()}")
-        else:
-            self._log("Resolution command: no response")
         return False
 
 
