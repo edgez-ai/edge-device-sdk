@@ -91,6 +91,33 @@ local function util_log(cfg, tag, msg)
   io.stderr:write("[" .. prefix .. "] " .. tostring(msg or "") .. "\n")
 end
 
+local function util_sleep(seconds)
+  local delay = tonumber(seconds) or 0
+  if delay <= 0 then
+    return true
+  end
+
+  if type(rs485_sleep) == "function" then
+    rs485_sleep(delay)
+    return true
+  end
+
+  if type(uart_sleep) == "function" then
+    uart_sleep(delay)
+    return true
+  end
+
+  if type(i2c_sleep) == "function" then
+    i2c_sleep(delay)
+    return true
+  end
+
+  local deadline = os.clock() + delay
+  while os.clock() < deadline do
+  end
+  return true
+end
+
 local util_global_buffer = { chunks = {}, size = 0 }
 
 local function util_init_global_buffer()
@@ -138,6 +165,7 @@ _G.util_build_read_holding_request = util_build_read_holding_request
 _G.util_extract_modbus_frame = util_extract_modbus_frame
 _G.util_decode_bcd_32 = util_decode_bcd_32
 _G.util_log = util_log
+_G.util_sleep = util_sleep
 _G.util_init_global_buffer = util_init_global_buffer
 _G.util_append_global_buffer = util_append_global_buffer
 _G.util_get_global_buffer = util_get_global_buffer
@@ -152,6 +180,7 @@ return {
   extract_modbus_frame = util_extract_modbus_frame,
   decode_bcd_32 = util_decode_bcd_32,
   log = util_log,
+  sleep = util_sleep,
   init_global_buffer = util_init_global_buffer,
   append_global_buffer = util_append_global_buffer,
   get_global_buffer = util_get_global_buffer,

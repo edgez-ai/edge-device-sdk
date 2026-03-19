@@ -11,6 +11,7 @@ end
 add_script_path()
 
 local RS485 = require("rs485_interface")
+local UART = require("uart_interface")
 local I2C = require("i2c_interface")
 local Util = require("util")
 
@@ -241,6 +242,18 @@ local function main()
   _G.RS485_TX_PIN = cfg.tx_pin
   _G.RS485_RX_PIN = cfg.rx_pin
   _G.RS485_HTTP_TIMEOUT = cfg.http_timeout
+
+  -- Set up UART globals
+  _G.UART_BACKEND = cfg.backend
+  _G.UART_BASE_URL = cfg.base_url
+  _G.UART_CLIENT = cfg.client
+  _G.UART_INSTANCE = cfg.instance
+  _G.UART_BAUD = cfg.baud
+  _G.UART_RX_SIZE = cfg.rx_size
+  _G.UART_MODE = cfg.rs485_mode
+  _G.UART_TX_PIN = cfg.tx_pin
+  _G.UART_RX_PIN = cfg.rx_pin
+  _G.UART_HTTP_TIMEOUT = cfg.http_timeout
 
   _G.VC0706_ACTION = cfg.action
   _G.VC0706_OUTPUT = cfg.output
