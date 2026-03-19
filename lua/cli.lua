@@ -38,6 +38,10 @@ local cfg_defaults = {
   reset = false,
   quiet = false,
   http_timeout = 5.0,
+  cam_serial_num = nil,
+  cam_set_resolution_cmd = nil,
+  cam_resolution_code = nil,
+  cam_read_chunk_size = nil,
 }
 
 -- Scripts that use I2C interface instead of RS485
@@ -77,6 +81,14 @@ local function parse_args(argv)
       cfg.reset = true
     elseif a == "--quiet" or a == "-q" then
       cfg.quiet = true
+    elseif a == "--cam-serial-num" then
+      cfg.cam_serial_num = tonumber(next_value())
+    elseif a == "--cam-set-res-cmd" then
+      cfg.cam_set_resolution_cmd = tonumber(next_value())
+    elseif a == "--cam-res-code" then
+      cfg.cam_resolution_code = tonumber(next_value())
+    elseif a == "--cam-read-chunk-size" then
+      cfg.cam_read_chunk_size = tonumber(next_value())
     elseif a == "--baud" or a == "-b" then
       cfg.baud = tonumber(next_value())
     elseif a == "--instance" or a == "-i" then
@@ -114,6 +126,10 @@ local function print_usage()
   print("  --action <NAME>           Script action (e.g., version|capture|set-resolution)")
   print("  --output, -o <FILE>       Output file for capture scripts (default: capture.jpg)")
   print("  --reset                   Reset device/camera before action")
+  print("  --cam-serial-num <N>      Camera protocol serial number (for vc0706_compat_camera)")
+  print("  --cam-set-res-cmd <N>     Camera set-resolution command code (default: 0x54)")
+  print("  --cam-res-code <N>        Camera resolution code (default: 0x55)")
+  print("  --cam-read-chunk-size <N> Camera read chunk size in bytes (for vc0706_compat_camera)")
   print("  --baud, -b <RATE>         UART baud rate (default: 9600)")
   print("  --instance, -i <ID>       LwM2M object instance (default: 0)")
   print("  --tx-pin <PIN>            Optional TX pin override")
@@ -126,11 +142,14 @@ local function print_usage()
   print("  flow          Flow meter via RS485/Modbus")
   print("  sht3x_temp    SHT3x temperature & humidity via I2C")
   print("  vc0706_camera VC0706 camera over RS485 (version/capture/set-resolution)")
+  print("  vc0706_compat_camera VC0706-like UART camera variant (version/capture/set-resolution)")
   print("")
   print("Examples:")
   print("  lua lua/cli.lua --client B43A45A45A08 --base-url http://192.168.10.105:8088")
   print("  lua lua/cli.lua -c B43A45A45A08 -u http://192.168.10.105:8088 -s sht3x_temp")
   print("  lua lua/cli.lua -c B43A45A45A08 -u http://192.168.10.105:8088 -s vc0706_camera --action version --baud 115200")
+  print("  lua lua/cli.lua -c B43A45A45A08 -u http://192.168.10.105:8088 -s vc0706_compat_camera --action capture --baud 115200")
+  print("  lua lua/cli.lua -c B43A45A45A08 -u http://192.168.10.105:8088 -s vc0706_compat_camera --action capture --tx-pin 19 --rx-pin 20 --cam-set-res-cmd 0x54 --cam-res-code 0x55")
 end
 
 local function table_keys_sorted(tbl)
@@ -228,6 +247,17 @@ local function main()
   _G.VC0706_RESET = cfg.reset
   _G.VC0706_BAUD = cfg.baud
   _G.VC0706_QUIET = cfg.quiet
+
+  _G.VC0706_COMPAT_ACTION = cfg.action
+  _G.VC0706_COMPAT_OUTPUT = cfg.output
+  _G.VC0706_COMPAT_RESET = cfg.reset
+  _G.VC0706_COMPAT_BAUD = cfg.baud
+  _G.VC0706_COMPAT_QUIET = cfg.quiet
+
+  _G.UART_CAM_SERIAL_NUM = cfg.cam_serial_num
+  _G.UART_CAM_CMD_SET_RESOLUTION = cfg.cam_set_resolution_cmd
+  _G.UART_CAM_RESOLUTION_CODE = cfg.cam_resolution_code
+  _G.UART_CAM_READ_CHUNK_SIZE = cfg.cam_read_chunk_size
 
   package.loaded[script_name] = nil
   local ok, result_or_err = pcall(require, script_name)

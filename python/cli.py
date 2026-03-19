@@ -113,6 +113,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_flow.add_argument("--modbus-timeout", type=float, default=1.0, help="Modbus read timeout seconds")
     p_flow.add_argument("--rs485-mode", type=int, default=0, help="RS485 mode value (device-specific)")
 
+    p_uart_listen = mode.add_parser("uart-listen", help="Continuously poll UART RX and print received messages")
+    p_uart_listen.add_argument("--tx-pin", type=int, help="UART TX pin")
+    p_uart_listen.add_argument("--rx-pin", type=int, help="UART RX pin")
+    p_uart_listen.add_argument("--baud", type=int, default=115200, help="UART baudrate")
+    p_uart_listen.add_argument("--rx-size", type=int, default=1024, help="UART RX buffer size")
+    p_uart_listen.add_argument("--poll-interval", type=float, default=0.05, help="Poll interval seconds")
+    p_uart_listen.add_argument("--count-limit", type=int, default=0, help="Number of polls; 0 for forever")
+
+    p_uart_send = mode.add_parser("uart-send", help="Periodically send a message over UART TX")
+    p_uart_send.add_argument("--tx-pin", type=int, help="UART TX pin")
+    p_uart_send.add_argument("--rx-pin", type=int, help="UART RX pin")
+    p_uart_send.add_argument("--baud", type=int, default=115200, help="UART baudrate")
+    p_uart_send.add_argument("--rx-size", type=int, default=1024, help="UART RX buffer size")
+    p_uart_send.add_argument("--message", type=str, required=True, help="Message to send over UART TX")
+    p_uart_send.add_argument("--interval", type=float, default=1.0, help="Send interval seconds")
+    p_uart_send.add_argument("--count-limit", type=int, default=0, help="Number of sends; 0 for forever")
+
     return parser
 
 
@@ -319,6 +336,83 @@ def run_flow(args: argparse.Namespace, session: UartSession, endpoint: str) -> N
         time.sleep(interval)
 
 
+def run_uart_listen(args: argparse.Namespace, session: UartSession, endpoint: str) -> None:
+    def emit(payload: dict) -> None:
+        print(json.dumps(payload), flush=True)
+
+    session.open(
+        baudrate=getattr(args, "baud", 115200),
+        tx_pin=getattr(args, "tx_pin", None),
+        rx_pin=getattr(args, "rx_pin", None),
+        rx_size=getattr(args, "rx_size", 1024),
+    )
+
+    interval = max(0.0, getattr(args, "poll_interval", 0.05))
+    count_limit = max(0, getattr(args, "count_limit", 0))
+    iterations = 0
+
+    while True:
+        data = session.read()
+        if data:
+            text_utf8 = data.decode("utf-8", "replace")
+            text_escaped = data.decode("utf-8", "backslashreplace")
+            text_ascii = "".join(chr(byte) if 32 <= byte <= 126 else "." for byte in data)
+            emit(
+                {
+                    "time": datetime.now(timezone.utc).isoformat(),
+                    "endpoint": endpoint,
+                    "len": len(data),
+                    "hex": data.hex(),
+                    "text": text_utf8,
+                    "text_escaped": text_escaped,
+                    "text_ascii": text_ascii,
+                }
+            )
+
+        iterations += 1
+        if count_limit > 0 and iterations >= count_limit:
+            break
+        time.sleep(interval)
+
+
+def run_uart_send(args: argparse.Namespace, session: UartSession, endpoint: str) -> None:
+    def emit(payload: dict) -> None:
+        print(json.dumps(payload), flush=True)
+
+    session.open(
+        baudrate=getattr(args, "baud", 115200),
+        tx_pin=getattr(args, "tx_pin", None),
+        rx_pin=getattr(args, "rx_pin", None),
+        rx_size=getattr(args, "rx_size", 1024),
+    )
+
+    message = getattr(args, "message", "")
+    payload = message.encode("utf-8")
+    interval = max(0.0, getattr(args, "interval", 1.0))
+    count_limit = max(0, getattr(args, "count_limit", 0))
+    iterations = 0
+
+    while True:
+        session.write(payload)
+        emit(
+            {
+                "time": datetime.now(timezone.utc).isoformat(),
+                "endpoint": endpoint,
+                "ok": True,
+                "len": len(payload),
+                "text": message,
+                "hex": payload.hex(),
+            }
+        )
+
+        iterations += 1
+        if count_limit > 0 and iterations >= count_limit:
+            break
+        if interval <= 0:
+            break
+        time.sleep(interval)
+
+
 def main(argv: Optional[Sequence[str]] = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -384,6 +478,24 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 resources=RS485_RESOURCES,
             )
         run_flow(args, uart_session, endpoint)
+    elif args.mode == "uart-listen":
+        uart_session = UartSession(
+            client,
+            endpoint,
+            args.instance,
+            object_id=UART_OBJECT_ID,
+            resources=UART_RESOURCES,
+        )
+        run_uart_listen(args, uart_session, endpoint)
+    elif args.mode == "uart-send":
+        uart_session = UartSession(
+            client,
+            endpoint,
+            args.instance,
+            object_id=UART_OBJECT_ID,
+            resources=UART_RESOURCES,
+        )
+        run_uart_send(args, uart_session, endpoint)
     else:
         raise RuntimeError(f"Unsupported mode: {args.mode}")
 

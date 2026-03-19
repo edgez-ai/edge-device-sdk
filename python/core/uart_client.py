@@ -171,6 +171,26 @@ class UartSession:
         )
         time.sleep(0.05)  # Small delay to ensure write completes
 
+    def _is_open(self) -> bool:
+        res_id = self.resources.get("open_state")
+        if res_id is None:
+            return False
+        try:
+            value = self.client.read_resource(self.endpoint, self.object_id, self.instance, res_id)
+        except Exception as exc:
+            self._log(f"read open_state failed: {exc}")
+            return False
+
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", errors="ignore")
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "open", "on"}
+        return False
+
     def open(
         self,
         *,
@@ -182,10 +202,10 @@ class UartSession:
         mode: Optional[int] = None,
     ) -> None:
         self._log(f"open(baud={baudrate}, tx={tx_pin}, rx={rx_pin}, rx_size={rx_size})")
-        
-        # First close if already open (to allow reconfiguration)
+
+        # Always close first to guarantee a clean reconnect sequence.
         if self._has("open_state"):
-            self._log("closing first to allow reconfiguration")
+            self._log("forcing close before open to allow reconnect/reconfiguration")
             self._write_res("open_state", "false")
             time.sleep(0.1)
         
@@ -201,6 +221,18 @@ class UartSession:
                 self._write_res("baudrate", baudrate)
             elif self._has("i2c_address"):
                 self._write_res("i2c_address", baudrate)
+
+        if self._has("baudrate"):
+            try:
+                effective_baud = self.client.read_resource(
+                    self.endpoint,
+                    self.object_id,
+                    self.instance,
+                    self.resources["baudrate"],
+                )
+                self._log(f"effective baud resource now={effective_baud}")
+            except Exception as exc:
+                self._log(f"readback baudrate failed: {exc}")
         
         # Configure buffer size
         if rx_size is not None and self._has("rx_buffer_size"):

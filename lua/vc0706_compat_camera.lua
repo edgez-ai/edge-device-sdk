@@ -1,32 +1,35 @@
 local result = {}
 
-local SERIAL_NUM = 0x00
+local SERIAL_NUM = tonumber(_G.UART_CAM_SERIAL_NUM) or 0x00
 
-local CMD_GET_VERSION = 0x11
-local CMD_RESET = 0x26
-local CMD_SET_DOWNSIZE = 0x31
-local CMD_FBUF_CTRL = 0x36
-local CMD_GET_FBUF_LEN = 0x34
-local CMD_READ_FBUF = 0x32
+local CMD_GET_VERSION = tonumber(_G.UART_CAM_CMD_GET_VERSION) or 0x11
+local CMD_RESET = tonumber(_G.UART_CAM_CMD_RESET) or 0x26
+local CMD_SET_RESOLUTION = tonumber(_G.UART_CAM_CMD_SET_RESOLUTION) or 0x54
+local CMD_FBUF_CTRL = tonumber(_G.UART_CAM_CMD_FBUF_CTRL) or 0x36
+local CMD_GET_FBUF_LEN = tonumber(_G.UART_CAM_CMD_GET_FBUF_LEN) or 0x34
+local CMD_READ_FBUF = tonumber(_G.UART_CAM_CMD_READ_FBUF) or 0x32
 
-local FBUF_STOP_FRAME = 0x00
-local FBUF_RESUME_FRAME = 0x02
+local FBUF_STOP_FRAME = tonumber(_G.UART_CAM_FBUF_STOP_FRAME) or 0x00
+local FBUF_RESUME_FRAME = tonumber(_G.UART_CAM_FBUF_RESUME_FRAME) or 0x02
 
-local READ_CHUNK_SIZE = 128
-local MAX_FRAME_SIZE = 500000
+local READ_CHUNK_SIZE = tonumber(_G.UART_CAM_READ_CHUNK_SIZE) or 128
+local MAX_FRAME_SIZE = tonumber(_G.UART_CAM_MAX_FRAME_SIZE) or 500000
 
-local cam_baud = 115200
-local cam_action = "capture"
-local cam_output =  "capture.jpg"
-local cam_reset = false
-local cam_quiet =  false
+local cam_baud = tonumber(_G.VC0706_COMPAT_BAUD) or tonumber(_G.VC0706_BAUD) or 9600
+local cam_action = tostring(_G.VC0706_COMPAT_ACTION or _G.VC0706_ACTION or "capture")
+local cam_output = tostring(_G.VC0706_COMPAT_OUTPUT or _G.VC0706_OUTPUT or "capture.jpg")
+local cam_reset = (_G.VC0706_COMPAT_RESET == true) or (_G.VC0706_RESET == true)
+local cam_quiet = (_G.VC0706_COMPAT_QUIET == true) or (_G.VC0706_QUIET == true)
+
+local cam_resolution = tonumber(_G.UART_CAM_RESOLUTION_CODE)
+if not cam_resolution then
+  cam_resolution = 0x55
+end
 
 local log_cfg = { quiet = cam_quiet }
 
-
-
 local function camera_log(msg)
-  util_log(log_cfg, "VC0706", msg)
+  util_log(log_cfg, "UART-CAM", msg)
 end
 
 local function strip_trailing_nulls_and_newlines(s)
@@ -38,7 +41,7 @@ local function build_command(cmd, args)
   return string.char(0x56, SERIAL_NUM, cmd & 0xFF, #args & 0xFF) .. args
 end
 
-local function send_command(cmd, args, label)
+local function send_command(cmd, args)
   local packet = build_command(cmd, args)
 
   local ok, err = rs485_reset_rx_cursor()
@@ -56,7 +59,7 @@ end
 
 local function read_response(timeout_seconds, max_len, expected_len)
   local timeout = tonumber(timeout_seconds) or 2.0
-  local max_bytes = tonumber(max_len) or 256
+  local max_bytes = tonumber(max_len) or 512
   local wanted = expected_len and tonumber(expected_len) or nil
   if wanted and wanted > max_bytes then
     wanted = max_bytes
@@ -118,10 +121,18 @@ local function verify_response(response, cmd)
     and string.byte(response, 4) == 0x00
 end
 
+local function starts_with_ack_for(response, cmd)
+  return #response >= 5
+    and string.byte(response, 1) == 0x76
+    and string.byte(response, 2) == SERIAL_NUM
+    and string.byte(response, 3) == (cmd & 0xFF)
+    and string.byte(response, 4) == 0x00
+end
+
 local function get_version()
   drain_buffer(0.1)
 
-  local ok, err = send_command(CMD_GET_VERSION, "", "GET_VERSION")
+  local ok, err = send_command(CMD_GET_VERSION, "")
   if not ok then
     return false, err
   end
@@ -151,7 +162,7 @@ local function get_version()
 end
 
 local function stop_frame()
-  local ok, err = send_command(CMD_FBUF_CTRL, string.char(FBUF_STOP_FRAME), "STOP_FRAME")
+  local ok, err = send_command(CMD_FBUF_CTRL, string.char(FBUF_STOP_FRAME))
   if not ok then
     return false, err
   end
@@ -164,7 +175,7 @@ local function stop_frame()
 end
 
 local function resume_frame()
-  local ok, err = send_command(CMD_FBUF_CTRL, string.char(FBUF_RESUME_FRAME), "RESUME_FRAME")
+  local ok, err = send_command(CMD_FBUF_CTRL, string.char(FBUF_RESUME_FRAME))
   if not ok then
     return false, err
   end
@@ -177,7 +188,7 @@ local function resume_frame()
 end
 
 local function get_frame_buffer_length()
-  local ok, err = send_command(CMD_GET_FBUF_LEN, string.char(0x00), "GET_FBUF_LEN")
+  local ok, err = send_command(CMD_GET_FBUF_LEN, string.char(0x00))
   if not ok then
     return 0, err
   end
@@ -212,6 +223,25 @@ local function build_read_fbuf_args(offset, chunk_size)
   )
 end
 
+local function extract_payload_from_read_response(response, chunk_size)
+  if type(response) ~= "string" or #response == 0 then
+    return nil, "empty read response"
+  end
+
+  if starts_with_ack_for(response, CMD_READ_FBUF) then
+    if #response >= (5 + chunk_size) then
+      return response:sub(6, 5 + chunk_size)
+    end
+    return nil, "ack present but payload too short"
+  end
+
+  if #response >= chunk_size then
+    return response:sub(1, chunk_size)
+  end
+
+  return nil, "payload too short"
+end
+
 local function read_frame_buffer_to_global(length, max_retries)
   local total = tonumber(length) or 0
   local retries = tonumber(max_retries) or 3
@@ -230,51 +260,42 @@ local function read_frame_buffer_to_global(length, max_retries)
   end
 
   local offset = 0
-
   while offset < total do
     local chunk_size = math.min(READ_CHUNK_SIZE, total - offset)
     local args = build_read_fbuf_args(offset, chunk_size)
 
-    local response = ""
+    local payload = nil
+    local last_err = nil
+
     for attempt = 1, retries do
-      local ok = send_command(CMD_READ_FBUF, args, string.format("READ_FBUF@%d#%d", offset, attempt))
+      local ok = send_command(CMD_READ_FBUF, args)
       if ok then
-        response = read_response(4.0, chunk_size + 10, chunk_size + 10)
-        if #response >= (5 + chunk_size) and verify_response(response, CMD_READ_FBUF) then
+        local response = read_response(4.0, chunk_size + 32)
+        payload, last_err = extract_payload_from_read_response(response, chunk_size)
+        if payload and #payload == chunk_size then
           break
         end
+      else
+        last_err = "failed to send read-fbuf command"
       end
-      camera_log(string.format("Retry chunk offset %d attempt %d/%d, got %d bytes", offset, attempt, retries, #response))
+      camera_log(string.format("Retry chunk offset %d attempt %d/%d", offset, attempt, retries))
     end
 
-    if #response < 10 then
-      return nil, "short read response at offset " .. tostring(offset) .. ": " .. tostring(#response) .. " bytes"
+    if not payload or #payload ~= chunk_size then
+      return nil, "failed to read chunk at offset " .. tostring(offset) .. ": " .. tostring(last_err)
     end
 
-    if not verify_response(response, CMD_READ_FBUF) then
-      return nil, "invalid read-fbuf response header at offset " .. tostring(offset)
-    end
-
-    local payload_start = 6
-    local payload_end = payload_start + chunk_size - 1
-    if #response < payload_end then
-      return nil, "chunk too short at offset " .. tostring(offset)
-    end
-
-    local payload = response:sub(payload_start, payload_end)
     local append_ok, append_err = util_append_global_buffer(payload)
     if not append_ok then
       return nil, "failed to append payload at offset " .. tostring(offset) .. ": " .. tostring(append_err)
     end
 
     payload = nil
-    response = nil
     if collectgarbage then
       collectgarbage("step", 200)
     end
 
     offset = offset + chunk_size
-
     local progress = math.floor((offset * 100) / total)
     io.write(string.format("\rRead progress: %d%% (%d/%d)", progress, offset, total))
     io.flush()
@@ -285,11 +306,11 @@ local function read_frame_buffer_to_global(length, max_retries)
 end
 
 local function reset_camera()
-  local ok, err = send_command(CMD_RESET, "", "RESET")
+  local ok, err = send_command(CMD_RESET, "")
   if not ok then
     return false, err
   end
-  local response = read_response(3.0, 64)
+  local response = read_response(3.0, 128)
   if #response >= 4 then
     return true
   end
@@ -297,22 +318,18 @@ local function reset_camera()
 end
 
 local function set_resolution()
-  local args = string.char(0x04, 0x01, 0x00, 0x19, 0x00)
-  local ok, err = send_command(CMD_SET_DOWNSIZE, args, "SET_RESOLUTION")
+  local args = string.char(cam_resolution & 0xFF)
+  local ok, err = send_command(CMD_SET_RESOLUTION, args)
   if not ok then
     return false, err
   end
 
   local response = read_response(2.0, 64)
-  if #response >= 5 then
-    local ack = response:sub(1, 5)
-    local expected = string.char(0x76, SERIAL_NUM, CMD_SET_DOWNSIZE, 0x01, 0x00)
-    if ack == expected then
-      return true
-    end
+  if #response >= 5 and verify_response(response, CMD_SET_RESOLUTION) then
+    return true
   end
 
-  if #response >= 4 and verify_response(response, CMD_SET_DOWNSIZE) then
+  if #response > 0 then
     return true
   end
 
@@ -339,9 +356,9 @@ local function capture_image()
     return nil, "failed to get frame length"
   end
 
-  local ok, read_err = read_frame_buffer_to_global(frame_len, 3)
+  local read_ok, read_err = read_frame_buffer_to_global(frame_len, 3)
   resume_frame()
-  if not ok then
+  if not read_ok then
     return nil, read_err
   end
   return frame_len
