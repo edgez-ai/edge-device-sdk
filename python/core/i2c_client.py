@@ -233,8 +233,18 @@ class I2CSession:
         self.client.i2c_reset_cursor(self.endpoint, self.instance)
         self.client.i2c_set_rx_size(self.endpoint, self.instance, 16)
 
+    def set_enabled(self, enabled: bool) -> None:
+        self.client.i2c_set_enabled(self.endpoint, self.instance, enabled)
+
+    def enable(self) -> None:
+        self.set_enabled(True)
+
     def close(self) -> None:
         self.client.i2c_set_open(self.endpoint, self.instance, False)
+
+    def disable(self) -> None:
+        self.close()
+        self.set_enabled(False)
 
     def reset_cursor(self) -> None:
         self.client.i2c_reset_cursor(self.endpoint, self.instance)

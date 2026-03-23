@@ -134,15 +134,19 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run_raw(args: argparse.Namespace, session: I2CSession, client: Lwm2mRestClient, endpoint: str) -> None:
-    session.open(args.addr, tx_pin=getattr(args, "tx_pin", None), rx_pin=getattr(args, "rx_pin", None))
-    if args.read > 0:
-        client.i2c_set_rx_size(endpoint, args.instance, args.read)
-    session.write(parse_byte_list(args.write))
-    time.sleep(0.01)
-    data = b""
-    if args.read > 0:
-        data = session.read()[: args.read]
-    print({"time": datetime.now(timezone.utc).isoformat(), "endpoint": endpoint, "raw_read_hex": data.hex(), "raw_read_len": len(data)})
+    session.enable()
+    try:
+        session.open(args.addr, tx_pin=getattr(args, "tx_pin", None), rx_pin=getattr(args, "rx_pin", None))
+        if args.read > 0:
+            client.i2c_set_rx_size(endpoint, args.instance, args.read)
+        session.write(parse_byte_list(args.write))
+        time.sleep(0.01)
+        data = b""
+        if args.read > 0:
+            data = session.read()[: args.read]
+        print({"time": datetime.now(timezone.utc).isoformat(), "endpoint": endpoint, "raw_read_hex": data.hex(), "raw_read_len": len(data)})
+    finally:
+        session.disable()
 
 
 def run_ens210(args: argparse.Namespace, session: I2CSession, endpoint: str) -> None:
@@ -150,22 +154,26 @@ def run_ens210(args: argparse.Namespace, session: I2CSession, endpoint: str) -> 
     delay = getattr(args, "delay", 0.15)
     interval = getattr(args, "interval", 0.0)
     count = getattr(args, "count", 0)
+    session.enable()
     session.open(addr, tx_pin=getattr(args, "tx_pin", None), rx_pin=getattr(args, "rx_pin", None))
 
     def _once() -> None:
         result = read_ens210(session, delay_s=delay)
         print({"time": datetime.now(timezone.utc).isoformat(), "endpoint": endpoint, **result})
 
-    if interval > 0:
-        iterations = 0
-        while True:
+    try:
+        if interval > 0:
+            iterations = 0
+            while True:
+                _once()
+                iterations += 1
+                if count > 0 and iterations >= count:
+                    break
+                time.sleep(interval)
+        else:
             _once()
-            iterations += 1
-            if count > 0 and iterations >= count:
-                break
-            time.sleep(interval)
-    else:
-        _once()
+    finally:
+        session.disable()
 
 
 def run_sht3x(args: argparse.Namespace, session: I2CSession, endpoint: str) -> None:
@@ -174,22 +182,26 @@ def run_sht3x(args: argparse.Namespace, session: I2CSession, endpoint: str) -> N
     delay = getattr(args, "delay", 0.001)
     interval = getattr(args, "interval", 0.0)
     count = getattr(args, "count", 0)
+    session.enable()
     session.open(addr, tx_pin=getattr(args, "tx_pin", None), rx_pin=getattr(args, "rx_pin", None))
 
     def _once() -> None:
         result = read_sht3x(session, repeatability=repeatability, delay_s=delay)
         print({"time": datetime.now(timezone.utc).isoformat(), "endpoint": endpoint, **result})
 
-    if interval > 0:
-        iterations = 0
-        while True:
+    try:
+        if interval > 0:
+            iterations = 0
+            while True:
+                _once()
+                iterations += 1
+                if count > 0 and iterations >= count:
+                    break
+                time.sleep(interval)
+        else:
             _once()
-            iterations += 1
-            if count > 0 and iterations >= count:
-                break
-            time.sleep(interval)
-    else:
-        _once()
+    finally:
+        session.disable()
 
 
 def run_aht20(args: argparse.Namespace, session: I2CSession, endpoint: str) -> None:
@@ -197,22 +209,26 @@ def run_aht20(args: argparse.Namespace, session: I2CSession, endpoint: str) -> N
     delay = getattr(args, "delay", 0.08)
     interval = getattr(args, "interval", 0.0)
     count = getattr(args, "count", 0)
+    session.enable()
     session.open(addr, tx_pin=getattr(args, "tx_pin", None), rx_pin=getattr(args, "rx_pin", None))
 
     def _once() -> None:
         result = read_aht20(session, delay_s=delay)
         print({"time": datetime.now(timezone.utc).isoformat(), "endpoint": endpoint, **result})
 
-    if interval > 0:
-        iterations = 0
-        while True:
+    try:
+        if interval > 0:
+            iterations = 0
+            while True:
+                _once()
+                iterations += 1
+                if count > 0 and iterations >= count:
+                    break
+                time.sleep(interval)
+        else:
             _once()
-            iterations += 1
-            if count > 0 and iterations >= count:
-                break
-            time.sleep(interval)
-    else:
-        _once()
+    finally:
+        session.disable()
 
 
 def run_vc0706(args: argparse.Namespace, session: UartSession, endpoint: str) -> None:
@@ -224,6 +240,7 @@ def run_vc0706(args: argparse.Namespace, session: UartSession, endpoint: str) ->
     retry_delay = max(0.0, getattr(args, "retry_delay", 0.5))
 
     try:
+        session.set_enabled(True)
         session.open(
             baudrate=getattr(args, "baud", 115200),
             tx_pin=getattr(args, "tx_pin", None),
@@ -281,136 +298,150 @@ def run_vc0706(args: argparse.Namespace, session: UartSession, endpoint: str) ->
                 "error": str(exc),
             }
         )
+    finally:
+        session.disable()
 
 
 def run_flow(args: argparse.Namespace, session: UartSession, endpoint: str) -> None:
     def emit(payload: dict) -> None:
         print(json.dumps(payload))
 
-    session.open(
-        baudrate=getattr(args, "baud", 9600),
-        tx_pin=getattr(args, "tx_pin", None),
-        rx_pin=getattr(args, "rx_pin", None),
-        rx_size=getattr(args, "rx_size", 256),
-        modbus_unit_id=getattr(args, "unit_id", 1),
-        mode=getattr(args, "rs485_mode", 0),
-    )
+    session.set_enabled(True)
+    try:
+        session.open(
+            baudrate=getattr(args, "baud", 9600),
+            tx_pin=getattr(args, "tx_pin", None),
+            rx_pin=getattr(args, "rx_pin", None),
+            rx_size=getattr(args, "rx_size", 256),
+            modbus_unit_id=getattr(args, "unit_id", 1),
+            mode=getattr(args, "rs485_mode", 0),
+        )
 
-    interval = max(0.0, getattr(args, "poll_interval", 1.0))
-    count_limit = max(0, getattr(args, "count_limit", 0))
-    iterations = 0
+        interval = max(0.0, getattr(args, "poll_interval", 1.0))
+        count_limit = max(0, getattr(args, "count_limit", 0))
+        iterations = 0
 
-    meter = FlowMeter(
-        session,
-        FlowMeterConfig(
-            unit_id=getattr(args, "unit_id", 1),
-            register_address=getattr(args, "address", 0),
-            register_count=getattr(args, "count", 4),
-            flow_scale=getattr(args, "flow_scale", 100000.0),
-            volume_scale=getattr(args, "volume_scale", 10000.0),
-            timeout_s=getattr(args, "modbus_timeout", 1.0),
-        ),
-    )
+        meter = FlowMeter(
+            session,
+            FlowMeterConfig(
+                unit_id=getattr(args, "unit_id", 1),
+                register_address=getattr(args, "address", 0),
+                register_count=getattr(args, "count", 4),
+                flow_scale=getattr(args, "flow_scale", 100000.0),
+                volume_scale=getattr(args, "volume_scale", 10000.0),
+                timeout_s=getattr(args, "modbus_timeout", 1.0),
+            ),
+        )
 
-    while True:
-        result = meter.read_flow_and_total_volume()
-        if result is None:
-            emit({"time": datetime.now(timezone.utc).isoformat(), "endpoint": endpoint, "ok": False, "error": "modbus timeout"})
-        else:
-            flow_rate, total_volume = result
-            emit(
-                {
-                    "time": datetime.now(timezone.utc).isoformat(),
-                    "endpoint": endpoint,
-                    "ok": True,
-                    "flow_rate": flow_rate,
-                    "total_volume": total_volume,
-                }
-            )
+        while True:
+            result = meter.read_flow_and_total_volume()
+            if result is None:
+                emit({"time": datetime.now(timezone.utc).isoformat(), "endpoint": endpoint, "ok": False, "error": "modbus timeout"})
+            else:
+                flow_rate, total_volume = result
+                emit(
+                    {
+                        "time": datetime.now(timezone.utc).isoformat(),
+                        "endpoint": endpoint,
+                        "ok": True,
+                        "flow_rate": flow_rate,
+                        "total_volume": total_volume,
+                    }
+                )
 
-        iterations += 1
-        if count_limit > 0 and iterations >= count_limit:
-            break
-        if interval <= 0:
-            break
-        time.sleep(interval)
+            iterations += 1
+            if count_limit > 0 and iterations >= count_limit:
+                break
+            if interval <= 0:
+                break
+            time.sleep(interval)
+    finally:
+        session.disable()
 
 
 def run_uart_listen(args: argparse.Namespace, session: UartSession, endpoint: str) -> None:
     def emit(payload: dict) -> None:
         print(json.dumps(payload), flush=True)
 
-    session.open(
-        baudrate=getattr(args, "baud", 115200),
-        tx_pin=getattr(args, "tx_pin", None),
-        rx_pin=getattr(args, "rx_pin", None),
-        rx_size=getattr(args, "rx_size", 1024),
-    )
+    session.set_enabled(True)
+    try:
+        session.open(
+            baudrate=getattr(args, "baud", 115200),
+            tx_pin=getattr(args, "tx_pin", None),
+            rx_pin=getattr(args, "rx_pin", None),
+            rx_size=getattr(args, "rx_size", 1024),
+        )
 
-    interval = max(0.0, getattr(args, "poll_interval", 0.05))
-    count_limit = max(0, getattr(args, "count_limit", 0))
-    iterations = 0
+        interval = max(0.0, getattr(args, "poll_interval", 0.05))
+        count_limit = max(0, getattr(args, "count_limit", 0))
+        iterations = 0
 
-    while True:
-        data = session.read()
-        if data:
-            text_utf8 = data.decode("utf-8", "replace")
-            text_escaped = data.decode("utf-8", "backslashreplace")
-            text_ascii = "".join(chr(byte) if 32 <= byte <= 126 else "." for byte in data)
-            emit(
-                {
-                    "time": datetime.now(timezone.utc).isoformat(),
-                    "endpoint": endpoint,
-                    "len": len(data),
-                    "hex": data.hex(),
-                    "text": text_utf8,
-                    "text_escaped": text_escaped,
-                    "text_ascii": text_ascii,
-                }
-            )
+        while True:
+            data = session.read()
+            if data:
+                text_utf8 = data.decode("utf-8", "replace")
+                text_escaped = data.decode("utf-8", "backslashreplace")
+                text_ascii = "".join(chr(byte) if 32 <= byte <= 126 else "." for byte in data)
+                emit(
+                    {
+                        "time": datetime.now(timezone.utc).isoformat(),
+                        "endpoint": endpoint,
+                        "len": len(data),
+                        "hex": data.hex(),
+                        "text": text_utf8,
+                        "text_escaped": text_escaped,
+                        "text_ascii": text_ascii,
+                    }
+                )
 
-        iterations += 1
-        if count_limit > 0 and iterations >= count_limit:
-            break
-        time.sleep(interval)
+            iterations += 1
+            if count_limit > 0 and iterations >= count_limit:
+                break
+            time.sleep(interval)
+    finally:
+        session.disable()
 
 
 def run_uart_send(args: argparse.Namespace, session: UartSession, endpoint: str) -> None:
     def emit(payload: dict) -> None:
         print(json.dumps(payload), flush=True)
 
-    session.open(
-        baudrate=getattr(args, "baud", 115200),
-        tx_pin=getattr(args, "tx_pin", None),
-        rx_pin=getattr(args, "rx_pin", None),
-        rx_size=getattr(args, "rx_size", 1024),
-    )
-
-    message = getattr(args, "message", "")
-    payload = message.encode("utf-8")
-    interval = max(0.0, getattr(args, "interval", 1.0))
-    count_limit = max(0, getattr(args, "count_limit", 0))
-    iterations = 0
-
-    while True:
-        session.write(payload)
-        emit(
-            {
-                "time": datetime.now(timezone.utc).isoformat(),
-                "endpoint": endpoint,
-                "ok": True,
-                "len": len(payload),
-                "text": message,
-                "hex": payload.hex(),
-            }
+    session.set_enabled(True)
+    try:
+        session.open(
+            baudrate=getattr(args, "baud", 115200),
+            tx_pin=getattr(args, "tx_pin", None),
+            rx_pin=getattr(args, "rx_pin", None),
+            rx_size=getattr(args, "rx_size", 1024),
         )
 
-        iterations += 1
-        if count_limit > 0 and iterations >= count_limit:
-            break
-        if interval <= 0:
-            break
-        time.sleep(interval)
+        message = getattr(args, "message", "")
+        payload = message.encode("utf-8")
+        interval = max(0.0, getattr(args, "interval", 1.0))
+        count_limit = max(0, getattr(args, "count_limit", 0))
+        iterations = 0
+
+        while True:
+            session.write(payload)
+            emit(
+                {
+                    "time": datetime.now(timezone.utc).isoformat(),
+                    "endpoint": endpoint,
+                    "ok": True,
+                    "len": len(payload),
+                    "text": message,
+                    "hex": payload.hex(),
+                }
+            )
+
+            iterations += 1
+            if count_limit > 0 and iterations >= count_limit:
+                break
+            if interval <= 0:
+                break
+            time.sleep(interval)
+    finally:
+        session.disable()
 
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
