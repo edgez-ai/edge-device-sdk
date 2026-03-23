@@ -138,6 +138,7 @@ class VC0706RestCamera:
         baudrate: int = 115200,
         tx_pin: Optional[int] = None,
         rx_pin: Optional[int] = None,
+        power_on_wait: float = 10.0,
         debug: bool = True,
     ):
         """
@@ -150,6 +151,7 @@ class VC0706RestCamera:
             baudrate: Baud rate (default: 38400)
             tx_pin: TX pin number (optional)
             rx_pin: RX pin number (optional)
+            power_on_wait: Delay after enabling interface power before open
             debug: Enable debug output
         """
         self.session = UartSession(
@@ -161,6 +163,7 @@ class VC0706RestCamera:
         self.baudrate = baudrate
         self.tx_pin = tx_pin
         self.rx_pin = rx_pin
+        self.power_on_wait = max(0.0, float(power_on_wait))
         self.debug = debug
         
     def _log(self, msg: str) -> None:
@@ -175,6 +178,11 @@ class VC0706RestCamera:
             True if connection opened successfully
         """
         try:
+            self._log("Enabling RS485 interface power...")
+            self.session.set_enabled(True)
+            if self.power_on_wait > 0:
+                self._log(f"Waiting {self.power_on_wait:.1f}s after power enable...")
+                time.sleep(self.power_on_wait)
             self._log(f"Opening RS485 at {self.baudrate} baud...")
             self.session.open(
                 baudrate=self.baudrate,
@@ -192,7 +200,9 @@ class VC0706RestCamera:
         """Close the RS485 connection."""
         try:
             self.session.close()
-            self._log("RS485 connection closed")
+            self._log("Disabling RS485 interface power...")
+            self.session.set_enabled(False)
+            self._log("RS485 connection closed and power disabled")
         except Exception as e:
             self._log(f"Error closing RS485: {e}")
     
@@ -363,10 +373,13 @@ class VC0706RestCamera:
         attempts = max_attempts or self.CONTROL_MAX_POLLS
         delay = self.COMMAND_INTERVAL_S if inter_attempt_delay is None else inter_attempt_delay
         last_response = b""
+        last_nonempty_response = b""
 
         for attempt in range(1, attempts + 1):
             response = self._read_response(timeout=timeout, max_len=max_len)
             last_response = response
+            if response:
+                last_nonempty_response = response
             ack_offset = self._find_ack_offset(response, cmd)
             if ack_offset >= 0:
                 if ack_offset > 0:
@@ -381,7 +394,7 @@ class VC0706RestCamera:
             if attempt < attempts and delay > 0:
                 time.sleep(delay)
 
-        return -1, last_response
+        return -1, (last_nonempty_response or last_response)
     
     def get_version(self) -> Optional[str]:
         """
@@ -719,6 +732,12 @@ def main():
         default=0.3,
         help="Device log poll interval in seconds (default: 0.3)"
     )
+    parser.add_argument(
+        "--power-on-wait",
+        type=float,
+        default=2.0,
+        help="Delay in seconds after enabling interface power (default: 2.0)"
+    )
     
     args = parser.parse_args()
     
@@ -738,7 +757,7 @@ def main():
         )
     
     # Create camera controller
-    camera = VC0706RestCamera(
+    camera_kwargs = dict(
         client=client,
         endpoint=args.client,
         instance=args.instance,
@@ -747,6 +766,9 @@ def main():
         rx_pin=args.rx_pin,
         debug=not args.quiet,
     )
+    if args.power_on_wait is not None:
+        camera_kwargs["power_on_wait"] = args.power_on_wait
+    camera = VC0706RestCamera(**camera_kwargs)
     
     try:
         # Start log polling

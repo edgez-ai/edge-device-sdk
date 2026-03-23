@@ -38,6 +38,7 @@ class VC0706UartRestCamera(VC0706RestCamera):
         baudrate: int = 115200,
         tx_pin: int | None = None,
         rx_pin: int | None = None,
+        power_on_wait: float = 1.0,
         debug: bool = True,
     ):
         super().__init__(
@@ -47,6 +48,7 @@ class VC0706UartRestCamera(VC0706RestCamera):
             baudrate=baudrate,
             tx_pin=tx_pin,
             rx_pin=rx_pin,
+            power_on_wait=power_on_wait,
             debug=debug,
         )
         self.session = UartSession(
@@ -66,6 +68,9 @@ class VC0706UartRestCamera(VC0706RestCamera):
         try:
             self._log("Enabling UART interface power...")
             self.session.set_enabled(True)
+            if self.power_on_wait > 0:
+                self._log(f"Waiting {self.power_on_wait:.1f}s after power enable...")
+                time.sleep(self.power_on_wait)
             self._log(f"Opening UART at {self.baudrate} baud...")
             self.session.open(
                 baudrate=self.baudrate,
@@ -118,6 +123,7 @@ def main() -> int:
     parser.add_argument("--quiet", "-q", action="store_true", help="Suppress debug output")
     parser.add_argument("--no-logs", action="store_true", help="Disable device log polling")
     parser.add_argument("--log-interval", type=float, default=0.3, help="Device log poll interval seconds")
+    parser.add_argument("--power-on-wait", type=float, default=1.0, help="Delay after enabling power (seconds)")
 
     args = parser.parse_args()
 
@@ -142,6 +148,7 @@ def main() -> int:
         baudrate=args.baud,
         tx_pin=args.tx_pin,
         rx_pin=args.rx_pin,
+        power_on_wait=args.power_on_wait,
         debug=not args.quiet,
     )
 

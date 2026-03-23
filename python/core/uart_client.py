@@ -229,9 +229,6 @@ class UartSession:
     ) -> None:
         self._log(f"open(baud={baudrate}, tx={tx_pin}, rx={rx_pin}, rx_size={rx_size})")
 
-        self.set_enabled(True)
-
-        # Always close first to guarantee a clean reconnect sequence.
         if self._has("open_state"):
             self._log("forcing close before open to allow reconnect/reconfiguration")
             self._write_res("open_state", "false")
@@ -273,10 +270,9 @@ class UartSession:
         # Configure mode if present
         if mode is not None and self._has("mode"):
             self._write_res("mode", mode)
-        
-        # Now open with all config in place
+
         if self._has("open_state"):
-            self._log("opening UART with configured parameters")
+            self._log("opening UART/RS485 interface")
             self._write_res("open_state", "true")
         
         self.reset_cursor()

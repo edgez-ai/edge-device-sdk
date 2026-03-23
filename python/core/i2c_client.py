@@ -120,6 +120,9 @@ class Lwm2mRestClient:
     def i2c_set_address(self, endpoint: str, instance: int, addr: int) -> None:
         self.write_resource(endpoint, I2C_OBJECT_ID, instance, I2C_RESOURCES["i2c_address"], addr)
 
+    def i2c_set_enabled(self, endpoint: str, instance: int, enabled: bool) -> None:
+        self.write_resource(endpoint, I2C_OBJECT_ID, instance, I2C_RESOURCES["enabled"], "true" if enabled else "false")
+
     def i2c_set_open(self, endpoint: str, instance: int, open_state: bool) -> None:
         self.write_resource(endpoint, I2C_OBJECT_ID, instance, I2C_RESOURCES["open_state"], "true" if open_state else "false")
 
@@ -229,6 +232,9 @@ class I2CSession:
         self.client.i2c_set_open(self.endpoint, self.instance, True)
         self.client.i2c_reset_cursor(self.endpoint, self.instance)
         self.client.i2c_set_rx_size(self.endpoint, self.instance, 16)
+
+    def close(self) -> None:
+        self.client.i2c_set_open(self.endpoint, self.instance, False)
 
     def reset_cursor(self) -> None:
         self.client.i2c_reset_cursor(self.endpoint, self.instance)
