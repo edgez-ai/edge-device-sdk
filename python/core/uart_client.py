@@ -191,6 +191,32 @@ class UartSession:
             return value.strip().lower() in {"1", "true", "open", "on"}
         return False
 
+    def is_enabled(self) -> bool:
+        res_id = self.resources.get("enabled")
+        if res_id is None:
+            return True
+        try:
+            value = self.client.read_resource(self.endpoint, self.object_id, self.instance, res_id)
+        except Exception as exc:
+            self._log(f"read enabled failed: {exc}")
+            return False
+
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", errors="ignore")
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "enabled", "on"}
+        return False
+
+    def set_enabled(self, enabled: bool) -> None:
+        if not self._has("enabled"):
+            self._log("SKIP enabled: not in resources")
+            return
+        self._write_res("enabled", "true" if enabled else "false")
+
     def open(
         self,
         *,
@@ -202,6 +228,8 @@ class UartSession:
         mode: Optional[int] = None,
     ) -> None:
         self._log(f"open(baud={baudrate}, tx={tx_pin}, rx={rx_pin}, rx_size={rx_size})")
+
+        self.set_enabled(True)
 
         # Always close first to guarantee a clean reconnect sequence.
         if self._has("open_state"):
@@ -258,6 +286,11 @@ class UartSession:
         self._log("close()")
         if self._has("open_state"):
             self._write_res("open_state", "false")
+
+    def disable(self) -> None:
+        self._log("disable()")
+        self.close()
+        self.set_enabled(False)
 
     def reset_cursor(self) -> None:
         if self._has("rx_buffer_pos"):

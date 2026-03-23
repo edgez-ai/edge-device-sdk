@@ -64,6 +64,8 @@ class VC0706UartRestCamera(VC0706RestCamera):
             self._log("UART already open; reusing existing connection")
             return True
         try:
+            self._log("Enabling UART interface power...")
+            self.session.set_enabled(True)
             self._log(f"Opening UART at {self.baudrate} baud...")
             self.session.open(
                 baudrate=self.baudrate,
@@ -81,12 +83,13 @@ class VC0706UartRestCamera(VC0706RestCamera):
             return False
 
     def disconnect(self) -> None:
-        if not self._uart_connected:
-            return
         try:
-            self.session.close()
+            if self._uart_connected:
+                self.session.close()
             self._uart_connected = False
-            self._log("UART connection closed")
+            self._log("Disabling UART interface power...")
+            self.session.set_enabled(False)
+            self._log("UART connection closed and power disabled")
         except Exception as e:
             self._log(f"Error closing UART: {e}")
 
