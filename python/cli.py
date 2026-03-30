@@ -19,7 +19,7 @@ from core import (
     UartSession,
     pick_client,
 )
-from driver import FlowMeter, FlowMeterConfig, VC0706Camera, read_aht20, read_ens210, read_sht3x
+from driver import FlowMeter, FlowMeterConfig, VC0706Camera, read_aht20, read_ens210, read_mpu6050, read_sht3x
 
 
 def parse_byte_list(text: str) -> Sequence[int]:
@@ -63,6 +63,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_aht20.add_argument("--delay", type=float, default=0.08, help="Measurement wait time seconds")
     p_aht20.add_argument("--interval", type=float, default=0.0, help="Poll interval seconds; 0 for one-shot")
     p_aht20.add_argument("--count", type=int, default=0, help="Number of polls when interval>0; 0 for forever")
+
+    p_mpu6050 = mode.add_parser("mpu6050", help="Read MPU6050 accelerometer/gyroscope")
+    p_mpu6050.add_argument(
+        "--addr",
+        type=lambda x: int(x, 0),
+        default=0x68,
+        help="7-bit I2C address: 0x68 (AD0 low, default) or 0x69 (AD0 high)",
+    )
+    p_mpu6050.add_argument("--tx-pin", type=int, help="I2C TX pin")
+    p_mpu6050.add_argument("--rx-pin", type=int, help="I2C RX pin")
+    p_mpu6050.add_argument("--delay", type=float, default=0.02, help="Configuration settle time in seconds")
 
     p_raw = mode.add_parser("raw", help="Manual I2C transaction")
     p_raw.add_argument("--addr", type=lambda x: int(x, 0), required=True, help="I2C address")
@@ -227,6 +238,21 @@ def run_aht20(args: argparse.Namespace, session: I2CSession, endpoint: str) -> N
                 time.sleep(interval)
         else:
             _once()
+    finally:
+        session.disable()
+
+
+def run_mpu6050(args: argparse.Namespace, session: I2CSession, endpoint: str) -> None:
+    addr = getattr(args, "addr", 0x68)
+    delay = getattr(args, "delay", 0.02)
+    if addr not in (0x68, 0x69):
+        raise ValueError(f"Unsupported MPU6050 7-bit address: {hex(addr)} (expected 0x68 or 0x69)")
+    session.enable()
+    session.open(addr, tx_pin=getattr(args, "tx_pin", None), rx_pin=getattr(args, "rx_pin", None))
+
+    try:
+        result = read_mpu6050(session, delay_s=delay)
+        print({"time": datetime.now(timezone.utc).isoformat(), "endpoint": endpoint, **result})
     finally:
         session.disable()
 
@@ -463,6 +489,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         run_aht20(args, session, endpoint)
     elif args.mode == "ens210":
         run_ens210(args, session, endpoint)
+    elif args.mode == "mpu6050":
+        run_mpu6050(args, session, endpoint)
     elif args.mode == "vc0706":
         iface = getattr(args, "iface", "uart")
         if iface == "rs485":
