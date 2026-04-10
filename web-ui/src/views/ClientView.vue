@@ -36,6 +36,16 @@
           {{ $route.params.endpoint }}
           <client-info :registration="registration" small tooltipbottom />
         </h3>
+          <div class="my-2">
+            <img
+              v-if="!imgError"
+              :src="imageUrl"
+              alt="device image"
+              style="max-width:100%; height:auto; border:1px solid #eee"
+              @error="imgError = true"
+            />
+            <div v-else style="color:#888; font-size:0.9em">No image available</div>
+          </div>
         <div>
           <div>Reg. ID: {{ registration.registrationId }}</div>
           <div>
@@ -116,6 +126,7 @@ export default {
     deregister: false,
     registration: null,
     objectdefs: [],
+    imgError: false,
   }),
   methods: {
     updateModels: function () {
@@ -137,6 +148,28 @@ export default {
     },
   },
   computed: {
+    imageUrl: function () {
+      const ep = this.$route.params.endpoint || "";
+      // sanitize: replace non-alnum with _ to match server filename logic
+      const safe = ep.replace(/[^A-Za-z0-9_-]/g, "_");
+
+      // Detect legacy peer-prefix routing: if the first path segment looks like a peer id,
+      // serve image under /{peerId}/images/<serial>.jpg. Otherwise, request /images/<serial>.jpg
+      try {
+        const parts = window.location.pathname.split('/').filter(Boolean);
+        if (parts.length > 0) {
+          const first = parts[0];
+          // heuristic: peer ids are long (>=46) and alphanumeric
+          if (/^[A-Za-z0-9_-]{46,}$/.test(first)) {
+            return '/' + encodeURIComponent(first) + '/images/' + encodeURIComponent(safe) + '.jpg';
+          }
+        }
+      } catch (e) {
+        // ignore and fall back
+      }
+
+      return '/images/' + encodeURIComponent(safe) + '.jpg';
+    },
     objectdef: function () {
       return this.objectdefs.find((o) => o.id == this.$route.params.objectid);
     },

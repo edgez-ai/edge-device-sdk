@@ -20,6 +20,7 @@ from core import (
     pick_client,
 )
 from driver import FlowMeter, FlowMeterConfig, VC0706Camera, read_aht20, read_ens210, read_mpu6050, read_sht3x
+from driver import ModbusTempHumidityConfig, ModbusTempHumiditySensor
 
 
 def parse_byte_list(text: str) -> Sequence[int]:
@@ -121,8 +122,38 @@ def build_parser() -> argparse.ArgumentParser:
     p_flow.add_argument("--volume-scale", type=float, default=10000.0, help="Total volume scale")
     p_flow.add_argument("--poll-interval", type=float, default=1.0, help="Poll interval seconds")
     p_flow.add_argument("--count-limit", type=int, default=0, help="Number of samples; 0 for forever")
-    p_flow.add_argument("--modbus-timeout", type=float, default=1.0, help="Modbus read timeout seconds")
+    p_flow.add_argument("--modbus-timeout", type=float, default=5.0, help="Modbus read timeout seconds")
     p_flow.add_argument("--rs485-mode", type=int, default=0, help="RS485 mode value (device-specific)")
+
+    p_modbus_th = mode.add_parser("modbus-th", help="Read temperature/humidity via Modbus RTU over RS485")
+    p_modbus_th.add_argument(
+        "--iface",
+        choices=["rs485", "uart"],
+        default="rs485",
+        help="Interface object to use (rs485 uses RS485 object; uart uses UART object)",
+    )
+    p_modbus_th.add_argument("--tx-pin", type=int, help="RS485 TX pin")
+    p_modbus_th.add_argument("--rx-pin", type=int, help="RS485 RX pin")
+    p_modbus_th.add_argument("--baud", type=int, default=9600, help="RS485 baudrate")
+    p_modbus_th.add_argument("--rx-size", type=int, default=256, help="RS485 RX buffer size")
+    p_modbus_th.add_argument("--unit-id", type=int, default=1, help="Modbus unit id")
+    p_modbus_th.add_argument("--address", type=int, default=0, help="Register start address")
+    p_modbus_th.add_argument("--count", type=int, default=2, help="Number of registers to read")
+    p_modbus_th.add_argument("--function-code", type=int, default=3, choices=[3, 4], help="Modbus function code: 3 or 4")
+    p_modbus_th.add_argument("--temp-scale", type=float, default=10.0, help="Temperature scale divisor (default 10 -> 0.1C units)")
+    p_modbus_th.add_argument("--humid-scale", type=float, default=10.0, help="Humidity scale divisor (default 10 -> 0.1%%RH units)")
+    p_modbus_th.add_argument(
+        "--value-order",
+        choices=["temp-first", "humidity-first"],
+        default="temp-first",
+        help="Order of values in returned registers when count>=2",
+    )
+    p_modbus_th.add_argument("--temp-index", type=int, help="Optional explicit temperature register index")
+    p_modbus_th.add_argument("--humid-index", type=int, help="Optional explicit humidity register index")
+    p_modbus_th.add_argument("--poll-interval", type=float, default=1.0, help="Poll interval seconds")
+    p_modbus_th.add_argument("--count-limit", type=int, default=0, help="Number of samples; 0 for forever")
+    p_modbus_th.add_argument("--modbus-timeout", type=float, default=5.0, help="Modbus read timeout seconds")
+    p_modbus_th.add_argument("--rs485-mode", type=int, default=0, help="RS485 mode value (device-specific)")
 
     p_uart_listen = mode.add_parser("uart-listen", help="Continuously poll UART RX and print received messages")
     p_uart_listen.add_argument("--tx-pin", type=int, help="UART TX pin")
@@ -355,7 +386,7 @@ def run_flow(args: argparse.Namespace, session: UartSession, endpoint: str) -> N
                 register_count=getattr(args, "count", 4),
                 flow_scale=getattr(args, "flow_scale", 100000.0),
                 volume_scale=getattr(args, "volume_scale", 10000.0),
-                timeout_s=getattr(args, "modbus_timeout", 1.0),
+                timeout_s=getattr(args, "modbus_timeout", 5.0),
             ),
         )
 
@@ -374,6 +405,61 @@ def run_flow(args: argparse.Namespace, session: UartSession, endpoint: str) -> N
                         "total_volume": total_volume,
                     }
                 )
+
+            iterations += 1
+            if count_limit > 0 and iterations >= count_limit:
+                break
+            if interval <= 0:
+                break
+            time.sleep(interval)
+    finally:
+        session.disable()
+
+
+def run_modbus_th(args: argparse.Namespace, session: UartSession, endpoint: str) -> None:
+    def emit(payload: dict) -> None:
+        print(json.dumps(payload), flush=True)
+
+    session.set_enabled(True)
+    try:
+        session.open(
+            baudrate=getattr(args, "baud", 9600),
+            tx_pin=getattr(args, "tx_pin", None),
+            rx_pin=getattr(args, "rx_pin", None),
+            rx_size=getattr(args, "rx_size", 256),
+            modbus_unit_id=getattr(args, "unit_id", 1),
+            mode=getattr(args, "rs485_mode", 0),
+        )
+
+        interval = max(0.0, getattr(args, "poll_interval", 1.0))
+        count_limit = max(0, getattr(args, "count_limit", 0))
+        iterations = 0
+
+        value_order = getattr(args, "value_order", "temp-first")
+        default_temp_index = 0 if value_order == "temp-first" else 1
+        default_humid_index = 1 if value_order == "temp-first" else 0
+
+        sensor = ModbusTempHumiditySensor(
+            session,
+            ModbusTempHumidityConfig(
+                unit_id=getattr(args, "unit_id", 1),
+                register_address=getattr(args, "address", 0),
+                register_count=getattr(args, "count", 2),
+                function_code=getattr(args, "function_code", 3),
+                temperature_scale=getattr(args, "temp_scale", 10.0),
+                humidity_scale=getattr(args, "humid_scale", 10.0),
+                temperature_index=getattr(args, "temp_index", default_temp_index),
+                humidity_index=getattr(args, "humid_index", default_humid_index),
+                timeout_s=getattr(args, "modbus_timeout", 5.0),
+            ),
+        )
+
+        while True:
+            result = sensor.read_temperature_humidity()
+            if result is None:
+                emit({"time": datetime.now(timezone.utc).isoformat(), "endpoint": endpoint, "ok": False, "error": "modbus timeout"})
+            else:
+                emit({"time": datetime.now(timezone.utc).isoformat(), "endpoint": endpoint, "ok": True, **result})
 
             iterations += 1
             if count_limit > 0 and iterations >= count_limit:
@@ -537,6 +623,25 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 resources=RS485_RESOURCES,
             )
         run_flow(args, uart_session, endpoint)
+    elif args.mode == "modbus-th":
+        iface = getattr(args, "iface", "rs485")
+        if iface == "uart":
+            uart_session = UartSession(
+                client,
+                endpoint,
+                args.instance,
+                object_id=UART_OBJECT_ID,
+                resources=UART_RESOURCES,
+            )
+        else:
+            uart_session = UartSession(
+                client,
+                endpoint,
+                args.instance,
+                object_id=RS485_OBJECT_ID,
+                resources=RS485_RESOURCES,
+            )
+        run_modbus_th(args, uart_session, endpoint)
     elif args.mode == "uart-listen":
         uart_session = UartSession(
             client,
