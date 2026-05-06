@@ -1,0 +1,493 @@
+通信协议
+协议：MODBUS协议 
+电平：485电平（默认波特率：9600bps）
+通讯格式：数据位8，无校验，停止位1
+从站默认地址：16进制：0x50
+ 读寄存器格式
+● 数据是按照16进制方式发送的，不是ASCII码。
+● 每个寄存器地址，读取寄存器个数，读取数据均采用两个字节表示。寄存器地址高低位用ADDRH，ADDRL表示，读取寄存器个数高低位用LENH，LENL表示，读取数据高低位用DATA1H，DATA1L表示。
+● 读取指令结尾两位为标准CRC校验位。可使用CRC校验位计算工具计算，CRC在线计算网址。
+指令发送
+Modbus地址	功能码	寄存器高8位	寄存器低8位	读取长度高8位	读取长度低8位	校验位高8位	校验位低8位
+ID	0x03（读）	ADDRH[15:8]	ADDRL[7:0]	LENH[15:8]	LENL[7:0]	CRCH[15:8]	CRCL[7:0]
+数据返回
+Modbus地址	功能码	读取长度	数据高8位	数据低8位	数据高8位	数据低8位	数据高8位	数据低8位	校验位高8位	校验位低8位
+ID	0x03（读）	LEN[7:0]	DATA1H[15:8]	DATA1L[7:0]	……	……	DATAnH	DATAnL	CRCH[15:8]	CRCL[7:0]
+写寄存器格式
+● 数据是按照16进制方式发送的，不是ASCII码。
+● 每个寄存器地址，写入数据均采用两个字节表示。寄存器地址高低位用ADDRH，ADDRL表示，写入数据高低位用DATAH，DATAL表示。
+指令发送
+Modbus地址	功能码	寄存器高8位	寄存器低8位	数据高8位	数据低8位	校验位高8位	校验位低8位
+ID	0x06（写）	ADDRH[15:8]	ADDRL[7:0]	DATAH[15:8]	DATAL[7:0]	CRCH[15:8]	CRCL[7:0]
+数据返回
+Modbus地址	功能码	寄存器高8位	寄存器低8位	数据高8位	数据低8位	校验位高8位	校验位低8位
+ID	0x06（写）	ADDRH[15:8]	ADDRL[7:0]	DATAH[15:8]	DATAL[7:0]	CRCH[15:8]	CRCL[7:0]
+注：
+进行指令写入操作时候需要分三个步骤执行。
+第一步解锁0x50 0x06 0x00 0x69 0xB5 0x88 0x22 0xA1，解锁十秒内有效果。
+第二步发送需要修改的指令，
+第三步保存指令0x50 0X06 0X00 0X00 0X00 0X84 0X4B。
+寄存器地址表 
+寄存器地址	符号	含义	单位及解释
+0x00	SAVE	保存/重启/恢复出厂	
+0x04	BAUD	串口波特率	
+0x1A	IICADDR	设备地址	
+0x30	YYMM	月年	
+0x31	DDHH	时日	
+0x32	MMSS	秒分	
+0x33	MS	毫秒	
+0x34	AX	X轴加速度	g
+0x35	AY	Y轴加速度	g
+0x36	AZ	Z轴加速度	g
+0x3A	VX	X轴振动速度	mm/s
+0x3B	VY	Y轴振动速度	mm/s
+0x3C	VZ	Z轴振动速度	mm/s
+0x40	TEMP	芯片温度	°C
+0x41	DX	X轴振动位移	mm
+0x42	DY	Y轴振动位移	mm
+0x43	DZ	Z轴振动位移	mm
+0x44	HZX	X轴振动频率	Hz
+0x45	HZY	Y轴振动频率	Hz
+0x46	HZZ	Z轴振动频率	Hz
+0x47	CFX	X轴加速度波峰因素	峰值与RMS比值，衡量信号突变程度 g
+0x48	KX	X轴加速度峭度值	检测冲击性成分或异常振动 g
+0x49	AAVGX	X轴加速度绝对平均值	振动绝对值的平均，衡量整体强度 g
+0x4A	VARX	X轴加速度方差	反映信号波动范围大小 g
+0x4B	RRAX	X轴加速度方根幅值（RMS）	能量强度的标准指标 g
+0x4C	WIX	X轴加速度波形指标	RMS与绝对平均值之比，反映波形形状
+0x50	PIX	X轴加速度峰值指标	峰值与绝对平均值之比 g 
+0x51	VKX	X轴速度峭度值	速度信号冲击性检测 g
+0x52	DRMSX	X轴位移RMS值	位移变化强度的衡量 mm
+0x53	CFY	Y轴加速度波峰因素	峰值与RMS比值，衡量信号突变程度 g
+0x54	KY	Y轴加速度峭度值	检测冲击性成分或异常振动 g
+0x55	AAVGY	Y轴加速度绝对平均值	振动绝对值的平均，衡量整体强度 g
+0x56	VARY	Y轴加速度方差	反映信号波动范围大小 g
+0x57	RRAY	Y轴加速度方根幅值（RMS）	能量强度的标准指标 g
+0x58	WIY	Y轴加速度波形指标	RMS与绝对平均值之比，反映波形形状
+0x59	PIY	Y轴加速度峰值指标	峰值与绝对平均值之比 g 
+0x5A	PCY	Y轴加速度脉冲系数	峰值与平均幅值之比 
+0x5B	SKY	Y轴加速度偏斜度	衡量信号对称性（正偏或负偏） g
+0x5C	VRMSY	Y轴速度RMS值	速度信号能量强度 mm/s
+0x5D	VKY	Y轴速度峭度值	速度信号冲击性检测 g
+0x5E	DRMSY	Y轴位移RMS值	位移变化强度的衡量 mm
+0x5F	CFZ	Z轴加速度波峰因素	峰值与RMS比值，衡量信号突变程度 g
+0x60	KZ	Z轴加速度峭度值	检测冲击性成分或异常振动 g
+0x61	AAVGZ	Z轴加速度绝对平均值	振动绝对值的平均，衡量整体强度 g
+0x62	VARZ	Z轴加速度方差	反映信号波动范围大小 g
+0x63	RRAZ	Z轴加速度方根幅值（RMS）	能量强度的标准指标 g
+0x64	WIZ	Z轴加速度波形指标	RMS与绝对平均值之比，反映波形形状
+0x65	PIZ	Z轴加速度峰值指标	峰值与绝对平均值之比 g
+0x66	PCZ	Z轴加速度脉冲系数	峰值与平均幅值之比
+0x67	SKZ	Z轴加速度偏斜度	衡量信号对称性（正偏或负偏）g
+0x68	VRMSZ	Z轴速度RMS值	速度信号能量强度 mm/s
+0x69	VKZ	Z轴速度峭度值	速度信号冲击性检测 g
+0x6A	DRMSZ	Z轴位移RMS值	位移变化强度的衡量 mm
+0x6B	ERRX	X轴故障诊断	
+0x6C	ERRY	Y轴故障诊断	
+0x6D	ERRZ	Z轴故障诊断	
+0x6E	AX_ENERGY_POINT1	X轴关注点 1 加速度谱能量	对加速度信号关键频点的能量分析  四分之一倍频
+0x6F	AX_ENERGY_POINT2	X轴关注点 2 加速度谱能量	对加速度信号关键频点的能量分析  二分之一倍频
+0x70	AX_ENERGY_POINT3	X轴关注点 3 加速度谱能量	对加速度信号关键频点的能量分析  一倍频
+0x71	AX_ENERGY_POINT4	X轴关注点 4 加速度谱能量	对加速度信号关键频点的能量分析  二倍频
+0x72	AX_ENERGY_POINT5	X轴关注点 5 加速度谱能量	对加速度信号关键频点的能量分析  三倍频
+0x73	AX_ENERGY_POINT6	X轴关注点 6 加速度谱能量	对加速度信号关键频点的能量分析  四倍频
+0x74	AX_ENERGY_POINT7	X轴关注点 7 加速度谱能量	对加速度信号关键频点的能量分析  五倍频
+0x75	AX_ENERGY_POINT8	X轴关注点 8 加速度谱能量	对加速度信号关键频点的能量分析  六倍频
+0x76	AX_ENERGY_AREA1	X轴关注带 1 加速度谱能量	对加速度信号在频段中的能量监控 0~1/2倍频
+0x77	AX_ENERGY_AREA2	X轴关注带 2 加速度谱能量	对加速度信号在频段中的能量监控 1/2~1倍频
+0x78	AX_ENERGY_AREA3	X轴关注带 3 加速度谱能量	对加速度信号在频段中的能量监控 1~2倍频
+0x79	AX_ENERGY_AREA4	X轴关注带 4 加速度谱能量	对加速度信号在频段中的能量监控 2~3倍频
+0x7A	AX_ENERGY_AREA5	X轴关注带 5 加速度谱能量	对加速度信号在频段中的能量监控 3~4倍频
+0x7B	AX_ENERGY_AREA6	X轴关注带 6 加速度谱能量	对加速度信号在频段中的能量监控 4~5倍频
+0x7C	AX_ENERGY	X加速度谱总能量	所有频率范围加速度能量总和
+0x7D	AY_ENERGY_POINT1	Y轴关注点 1 加速度谱能量	对加速度信号关键频点的能量分析  四分之一倍频
+0x7E	AY_ENERGY_POINT2	Y轴关注点 2 加速度谱能量	对加速度信号关键频点的能量分析  二分之一倍频
+0x7F	AY_ENERGY_POINT3	Y轴关注点 3 加速度谱能量	对加速度信号关键频点的能量分析  一倍频
+0x80	AY_ENERGY_POINT4	Y轴关注点 4 加速度谱能量	对加速度信号关键频点的能量分析  二倍频
+0x81	AY_ENERGY_POINT5	Y轴关注点 5 加速度谱能量	对加速度信号关键频点的能量分析  三倍频
+0x82	AY_ENERGY_POINT6	Y轴关注点 6 加速度谱能量	对加速度信号关键频点的能量分析  四倍频
+0x83	AY_ENERGY_POINT7	Y轴关注点 7 加速度谱能量	对加速度信号关键频点的能量分析  五倍频
+0x84	AY_ENERGY_POINT8	Y轴关注点 8 加速度谱能量	对加速度信号关键频点的能量分析  六倍频
+0x85	AY_ENERGY_AREA1	Y轴关注带 1 加速度谱能量	对加速度信号在频段中的能量监控 0~1/2倍频
+0x86	AY_ENERGY_AREA2	Y轴关注带 2 加速度谱能量	对加速度信号在频段中的能量监控 1/2~1倍频
+0x87	AY_ENERGY_AREA3	Y轴关注带 3 加速度谱能量	对加速度信号在频段中的能量监控 1~2倍频
+0x88	AY_ENERGY_AREA4	Y轴关注带 4 加速度谱能量	对加速度信号在频段中的能量监控 2~3倍频
+0x89	AY_ENERGY_AREA5	Y轴关注带 5 加速度谱能量	对加速度信号在频段中的能量监控 3~4倍频
+0x8A	AY_ENERGY_AREA6	Y轴关注带 6 加速度谱能量	对加速度信号在频段中的能量监控 4~5倍频
+0x8B	AY_ENERGY	Y加速度谱总能量	所有频率范围加速度能量总和
+0x8C	AZ_ENERGY_POINT1	Z轴关注点 1 加速度谱能量	对加速度信号关键频点的能量分析  四分之一倍频
+0x8D	AZ_ENERGY_POINT2	Z轴关注点 2 加速度谱能量	对加速度信号关键频点的能量分析  二分之一倍频
+0x8E	AZ_ENERGY_POINT3	Z轴关注点 3 加速度谱能量	对加速度信号关键频点的能量分析  一倍频
+0x8F	AZ_ENERGY_POINT4	Z轴关注点 4 加速度谱能量	对加速度信号关键频点的能量分析  二倍频
+0x90	AZ_ENERGY_POINT5	Z轴关注点 5 加速度谱能量	对加速度信号关键频点的能量分析  三倍频
+0x91	AZ_ENERGY_POINT6	Z轴关注点 6 加速度谱能量	对加速度信号关键频点的能量分析  四倍频
+0x92	AZ_ENERGY_POINT7	Z轴关注点 7 加速度谱能量	对加速度信号关键频点的能量分析  五倍频
+0x93	AZ_ENERGY_POINT8	Z轴关注点 8 加速度谱能量	对加速度信号关键频点的能量分析  六倍频
+0x94	AZ_ENERGY_AREA1	Z轴关注带 1 加速度谱能量	对加速度信号在频段中的能量监控 0~1/2倍频
+0x95	AZ_ENERGY_AREA2	Z轴关注带 2 加速度谱能量	对加速度信号在频段中的能量监控 1/2~1倍频
+0x96	AZ_ENERGY_AREA3	Z轴关注带 3 加速度谱能量	对加速度信号在频段中的能量监控 1~2倍频
+0x97	AZ_ENERGY_AREA4	Z轴关注带 4 加速度谱能量	对加速度信号在频段中的能量监控 2~3倍频
+0x98	AZ_ENERGY_AREA5	Z轴关注带 5 加速度谱能量	对加速度信号在频段中的能量监控 3~4倍频
+0x99	AZ_ENERGY_AREA6	Z轴关注带 6 加速度谱能量	对加速度信号在频段中的能量监控 4~5倍频
+0x9A	AZ_ENERGY	Z加速度谱总能量	所有频率范围加速度能量总和
+寄存器说明
+以下所有示例均为Modbus地址为0x50（默认）情况下的指令，如更改Modbus地址需要相应更改指令中地址与CRC校验位。
+SAVE（保存/重启/恢复出厂）
+寄存器名称: SAVE
+寄存器地址: 0 (0x00)
+读写方向: R/W
+默认值: 0x0000
+Bit	NAME	FUNCTION
+15:0	SAVE[15:0]	保存: 0x0000
+重启: 0x00FF
+恢复出厂: 0x0001
+示例：
+发送：50 06 00 69 B5 88 22 A1（解锁10S内有用）
+返回：50 06 00 69 B5 88 22 A1
+发送：50 06 00 00 00 FF C4 0B（重启）
+返回：50 06 00 00 00 FF C4 0B
+BAUD（串口波特率）
+寄存器名称: BAUD
+寄存器地址: 4 (0x04)
+读写方向: R/W
+默认值: 0x0002		
+Bit	NAME	FUNCTION
+15:4		
+3:0	BAUD[3:0]	设置串口波特率： 
+0001(0x01) 4800bps 0010(0x02): 9600bps 0011(0x03): 19200bps 0100(0x04): 38400bps 0101(0x05): 57600bps 0110(0x06): 115200bps 0111(0x07): 230400bps
+示例：
+发送：50 06 00 69 B5 88 22 A1（解锁10S内有用）
+返回：50 06 00 69 B5 88 22 A1
+发送：50 06 00 04 00 06 45 88（设置串口波特率115200）
+发送：50 06 00 00 00 00 84 4B（115200baud下保存）
+返回：50 06 00 00 00 00 84 4B
+IICADDR（设备地址）
+寄存器名称: IICADDR
+寄存器地址: 26 (0x1A)
+读写方向: R/W
+默认值: 0x0050
+Bit	NAME	FUNCTION
+15:8		
+7:0	IICADDR[7:0]	设置设备地址，用于I2C和Modbus通讯使用0x01~0x7F
+示例：
+发送：50 06 00 69 B5 88 22 A1（解锁10S内有用）
+返回：50 06 00 69 B5 88 22 A1
+发送：50 06 00 1A 00 02 24 4D（设置设备地址为0x02）
+返回：50 06 00 1A 00 02 24 4D
+发送：02 06 00 69 B5 88 2F 13（解锁10S内有用）
+返回：02 06 00 69 B5 88 2F 13
+发送：02 06 00 00 00 00 89 F9（保存）
+返回：02 06 00 00 00 00 89 F9
+YYMM~MS（片上时间）
+寄存器名称: YYMM~MS
+寄存器地址: 48~51 (0x30~0x33)
+读写方向: R/W
+默认时间: （2015, 1, 1, 00, 00, 59, 00）
+Bit	NAME	FUNCTION
+15:8	YYMM[15:8]	月
+7:0	YYMM[7:0]	年
+15:8	DDHH[15:8]	时
+7:0	DDHH[7:0]	日
+15:8	MMSS[15:8]	秒
+7:0	MMSS[7:0]	分
+15:0	MS[15:0]	毫秒
+示例：读取
+发送：50 03 00 30 00 
+
+
+示例：写入设置
+发送：50 06 00 69 B5 88 22 A1（解锁10S内有用）
+返回：50 06 00 69 B5 88 22 A1
+发送：50 06 00 30 03 16 05 7A（设置年月22-03）
+返回：50 06 00 30 03 16 05 7A
+发送：50 06 00 31 09 0C D3 D1（设置日时12-09）
+返回：50 06 00 31 09 0C D3 D1
+发送：50 06 00 32 3A 1E B7 2C（设置分秒30:58）
+返回：50 06 00 32 3A 1E B7 2C
+发送：50 06 00 33  01 F4 74 53（设置毫秒500）
+返回：50 06 00 33 01 F4 74 53
+发送：50 06 00 00 00 00 84 4B（保存）
+返回：50 06 00 00 00 00 84 4B
+AX~AZ（加速度）
+寄存器名称: AX~AZ
+寄存器地址: 52~54 (0x34~0x36)
+读写方向: R
+默认值: 0x0000 
+Bit	 NAME  	 FUNCTION  
+15:0	AX[15:0]	加速度X=AX[15:0]/32768*16g (g为重力加速度，可取9.8m/s2)
+15:0	AY[15:0]	加速度Y=AY[15:0]/32768*16g (g为重力加速度，可取9.8m/s2)
+15:0	AZ[15:0]	加速度Z=AZ[15:0]/32768*16g (g为重力加速度，可取9.8m/s2)
+示例：
+发送：50 03 00 34 00 03 49 84（读取三轴加速度）
+返回：50 03 06 AXH AXL AYH AYL AZH AZL CRCH CRCL
+AX[15:0]=((short)AXH <<8)|AXL;
+AY[15:0]=((short)AYH <<8)|AYL;
+AZ[15:0]=((short)AZH <<8)|AZL;
+
+VX~VZ（振动速度）
+寄存器名称: VX~VZ
+寄存器地址: 58~60 (0x3A~0x3C)
+读写方向: R
+默认值: 0x0000
+Bit	NAME	FUNCTION
+15:0	VX[15:0]	振动速度VX（mm/S）=((VXH << 8)| VXL)/100
+15:0	VY[15:0]	振动速度VY（mm/S） =((VYH << 8)| VYL)/100
+15:0	VZ[15:0]	振动速度VZ（mm/S） =((VZH << 8)| VZL)/100
+示例：
+发送：50 03 00 3A 00 03 28 47（读取三轴振动速度速度）
+返回：50 03 06 VXH VXL VYH VYL VZH VZL CRCH CRCL 
+     VX[15:0]=(((short)VXH <<8)|VXL)/100;
+     VY[15:0]=(((short)VYH <<8)|VYL)/100;
+     VZ[15:0]=(((short)VZH <<8)|VZL)/100;
+		
+预留
+寄存器名称: 预留
+寄存器地址: 61~63(0x3D~0x3F)
+读写方向: R
+默认值: 0x0000
+TEMP(温度)
+寄存器名称: TEMP
+寄存器地址: 64 (0x40)
+读写方向: R
+默认值: 0x0000
+Bit	NAME	FUNCTION
+15:0	TEMP[15:0]	温度=TEMP[15:0]/100℃
+示例：
+发送：50 03 00 40 00 01 88 5F（读取芯片温度） 
+返回：50 03 02 TEMPH TEMPL CRCH CRCL 
+TEMP[15:0]=(((short)TEMPH <<8)|TEMPL);
+DX~DZ（振动位移）
+寄存器名称: DX~DZ
+寄存器地址: 65~67 (0x41~0x43)
+读写方向: R
+默认值: 0x0000
+Bit	NAME	FUNCTION
+15:0	DX[15:0]	振动位移DX(um)=((DXH << 8)| DXL)
+15:0	DY[15:0]	振动位移DY(um)=((DYH << 8)| DYL)
+15:0	DZ[15:0]	振动位移DZ(um)=((DZH << 8| DZL)
+示例：
+发送：50 03 00 41 00 03 58 5E（读取三轴振动位移）
+返回：50 03 06 DXH DXL DYH DYL DZH DZL CRCH CRCL 
+       DX[15:0]=(((short)DXH <<8)|DXL);
+             DY[15:0]=(((short)DYH <<8)|DYL);
+             DZ[15:0]=(((short)DZH <<8)|DZL);
+HZX~HZZ（振动频率）
+寄存器名称: HZX~HZZ
+寄存器地址: 68~70 (0x44~0x46)
+读写方向: R
+默认值: 0x0000
+Bit	NAME	FUNCTION
+15:0	HZX[15:0]	振动频率HZX(Hz)=((HZXH << 8)| HZXL)/10
+15:0	HZY[15:0]	振动频率HZY(Hz)=((HZYH << 8)| HZYL)/10
+15:0	HZZ[15:0]	振动频率HZZ(Hz)=((HZZH << 8| HZZL)/10
+示例：
+发送：50 03 00 44 00 03 48 5F（读取三轴振动频率）
+ 返回：50 03 06 HZXH HZXL HZYH HZYL HZZH HZZL CRCH CRCL 
+       HZX[15:0]=(((short)HZXH <<8)|HZXL)/10;
+             HZY[15:0]=(((short)HZYH <<8)|HZYL)/10;
+             HZZ[15:0]=(((short)HZZH <<8)|HZZL)/10;
+X轴振动模拟量
+寄存器名称: CFX~DRMSX
+寄存器地址: 71~82 (0x47~0x52)
+读写方向: R
+默认值: 0x0000
+Bit	NAME	FUNCTION
+15:0	CFX[15:0]	X轴加速度波峰因素CFX(g)=((CFXH << 8)| CFXL)/1000
+15:0	KX[15:0]	X轴加速度峭度值KX(g)=((KXH << 8)| KXL)/1000
+15:0	AAVGX[15:0]	X轴加速度绝对平均值AAVGX(g)=((AAVGXH << 8| AAVGXL)/1000
+15:0	VARX[15:0]	X轴加速度方差VARX(g)=((VARXH << 8| VARXL)/1000
+15:0	RRAX[15:0]	X轴加速度方根幅值（RMS）RRAX(g)=((RRAXH << 8| RRAXL)/1000
+15:0	WIX[15:0]	X轴加速度波形指标 WIX=((WIXH<< 8| WIXL)/1000
+15:0	PIX[15:0]	X轴加速度峰值指标 PIX(g)=((PIXH<< 8| PIXL)/1000
+15:0	PCX[15:0]	X轴加速度脉冲系数 PCX=((PCXH<< 8| PCXL)/1000
+15:0	SKX[15:0]	X轴加速度偏斜度 SKX(g)=((SKXH<< 8| SKXL)/1000
+15:0	VRMSX[15:0]	X轴速度RMS值 VRMSX(mm/s)=((VRMSXH<< 8| VRMSXL)/1000
+15:0	VKX[15:0]	X轴速度峭度值 VKX(g)=((VKXH<< 8| VKXL)/1000
+15:0	DRMSX[15:0]	X轴位移RMS值 DRMSX(mm)=((DRMSXH<< 8| DRMSXL)/1000
+示例：
+发送：50 03 00 NAME 00 01 CRCH CRCL
+ 返回：50 03 06 NAMEH NAMEL CRCH CRCL 
+NAME[15:0]=(((short)NAMEH <<8)|NAMEL)/1000;
+示例：
+发送：50 03 00 47 00 01 39 9E（X轴加速度波峰因素）
+ 返回：50 03 06 CFXH CFXL CRCH CRCL 
+CFX[15:0]=(((short)CFXH <<8)|CFXL)/1000;
+     
+Y轴振动模拟量
+寄存器名称: CFY~DRMSY
+寄存器地址: 83~94 (0x53~0x5E)
+读写方向: R
+默认值: 0x0000
+Bit	NAME	FUNCTION
+15:0	CFY[15:0]	Y轴加速度波峰因素CFY(g)=((CFYH << 8)| CFYL)/1000
+15:0	KY[15:0]	Y轴加速度峭度值KY(g)=((KYH << 8)| KYL)/1000
+15:0	AAVGY[15:0]	Y轴加速度绝对平均值AAVGY(g)=((AAVGYH << 8| AAVGYL)/1000
+15:0	VARY[15:0]	Y轴加速度方差VARY(g)=((VARYH << 8| VARYL)/1000
+15:0	RRAY[15:0]	Y轴加速度方根幅值（RMS）RRAY(g)=((RRAYH << 8| RRAYL)/1000
+15:0	WIY[15:0]	Y轴加速度波形指标 WIY=((WIYH<< 8| WIYL)/1000
+15:0	PIY[15:0]	Y轴加速度峰值指标 PIY(g)=((PIYH<< 8| PIYL)/1000
+15:0	PCY[15:0]	Y轴加速度脉冲系数 PCY=((PCYH<< 8| PCYL)/1000
+15:0	SKY[15:0]	Y轴加速度偏斜度 SKY(g)=((SKYH<< 8| SKYL)/1000
+15:0	VRMSY[15:0]	Y轴速度RMS值 VRMSY(mm/s)=((VRMSYH<< 8| VRMSYL)/1000
+15:0	VKY[15:0]	Y轴速度峭度值 VKY(g)=((VKYH<< 8| VKYL)/1000
+15:0	DRMSY[15:0]	Y轴位移RMS值 DRMSY(mm)=((DRMSYH<< 8| DRMSYL)/1000
+示例：
+发送：50 03 00 NAME 00 01 CRCH CRCL
+ 返回：50 03 06 NAMEH NAMEL CRCH CRCL 
+NAME[15:0]=(((short)NAMEH <<8)|NAMEL)/1000;
+示例：
+发送：50 03 00 53 00 01 79 9A（Y轴加速度波峰因素）
+ 返回：50 03 06 CFYH CFYL CRCH CRCL 
+CFX[15:0]=(((short)CFYH <<8)|CFYL)/1000;
+     
+
+Z轴振动模拟量
+寄存器名称: CFZ~DRMSZ
+寄存器地址: 95~106 (0x5F~0x6A)
+读写方向: R
+默认值: 0x0000
+Bit	NAME	FUNCTION
+15:0	CFZ[15:0]	Z轴加速度波峰因素CFZ(g)=((CFZH << 8)| CFZL)/1000
+15:0	KZ[15:0]	Z轴加速度峭度值KZ(g)=((KZH << 8)| KZL)/1000
+15:0	AAVGZ[15:0]	Z轴加速度绝对平均值AAVGZ(g)=((AAVGZH << 8| AAVGZL)/1000
+15:0	VARZ[15:0]	Z轴加速度方差VARZ(g)=((VARZH << 8| VARZL)/1000
+15:0	RRAZ[15:0]	Z轴加速度方根幅值（RMS）RRAZ(g)=((RRAZH << 8| RRAZL)/1000
+15:0	WIZ[15:0]	Z轴加速度波形指标 WIZ=((WIZH<< 8| WIZL)/1000
+15:0	PIZ[15:0]	Z轴加速度峰值指标 PIZ(g)=((PIZH<< 8| PIZL)/1000
+15:0	PCZ[15:0]	Z轴加速度脉冲系数 PCZ=((PCZH<< 8| PCZL)/1000
+15:0	SKZ[15:0]	Z轴加速度偏斜度 SKZ(g)=((SKZH<< 8| SKZL)/1000
+15:0	VRMSZ[15:0]	Z轴速度RMS值 VRMSZ(mm/s)=((VRMSZH<< 8| VRMSZL)/1000
+15:0	VKZ[15:0]	Z轴速度峭度值 VKZg)=((VKZH<< 8| VKZL)/1000
+15:0	DRMSZ[15:0]	Z轴位移RMS值 DRMSZ(mm)=((DRMSZH<< 8| DRMSZL)/1000
+示例：
+发送：50 03 00 NAME 00 01 CRCH CRCL
+ 返回：50 03 06 NAMEH NAMEL CRCH CRCL 
+NAME[15:0]=(((short)NAMEH <<8)|NAMEL)/1000;
+示例：
+发送：50 03 00 5F 00 01 79 9A（Y轴加速度波峰因素）
+ 返回：50 03 06 CFZH CFZL CRCH CRCL 
+CFZ[15:0]=(((short)CFZH <<8)|CFZL)/1000;
+     
+XYZ轴故障诊断
+寄存器名称: ERRX~ERRZ
+寄存器地址:107~109 (0x6B~0x6D)
+读写方向: R
+默认值: 0x0000
+Bit	NAME	FUNCTION
+15:0	ERRX	
+15:0	ERRY	
+15:0	ERRZ	
+示例：
+发送：50 03 00 NAME 00 01 CRCH CRCL
+ 返回：50 03 06 NAMEH NAMEL CRCH CRCL 
+NAME[15:0]=(((short)NAMEH <<8)|NAMEL);
+示例：
+发送：50 03 00 6B 00 01 F8 57
+返回：50 03 06 ERRXH ERRXL CRCH CRCL
+ERRX[15:0]=(((short)ERRXH <<8)|ERRXL);
+
+X轴关注点与关注带加速度谱能量
+寄存器名称: AX_ENERGY_POINT1~AX_ENERGY
+寄存器地址: 110~124 (0x6E~0x7C)
+读写方向: R
+默认值: 0x0000
+Bit	NAME	FUNCTION
+15:0	AX_ENERGY_POINT1[15:0]	X轴关注点 1 加速度谱能量AX_ENERGY_POINT1=((AX_ENERGY_POINT1H << 8)| AX_ENERGY_POINT1L)
+15:0	AX_ENERGY_POINT2[15:0]	X轴关注点 2 加速度谱能量AX_ENERGY_POINT2=((AX_ENERGY_POINT2H << 8)| AX_ENERGY_POINT2L)
+15:0	AX_ENERGY_POINT3[15:0]	X轴关注点 3 加速度谱能量AX_ENERGY_POINT3=((AX_ENERGY_POINT3H << 8)| AX_ENERGY_POINT3L)
+15:0	AX_ENERGY_POINT4[15:0]	X轴关注点 4 加速度谱能量AX_ENERGY_POINT1=((AX_ENERGY_POINT4H << 8)| AX_ENERGY_POINT4L)
+15:0	AX_ENERGY_POINT5[15:0]	X轴关注点 5 加速度谱能量AX_ENERGY_POINT5=((AX_ENERGY_POINT5H << 8)| AX_ENERGY_POINT5L)
+15:0	AX_ENERGY_POINT6[15:0]	X轴关注点 6 加速度谱能量AX_ENERGY_POINT6=((AX_ENERGY_POINT6H << 8)| AX_ENERGY_POINT6L)
+15:0	AX_ENERGY_POINT7[15:0]	X轴关注点 7 加速度谱能量AX_ENERGY_POINT7=((AX_ENERGY_POINT7H << 8)| AX_ENERGY_POINT7L)
+15:0	AX_ENERGY_POINT8[15:0]	X轴关注点 8 加速度谱能量AX_ENERGY_POINT8=((AX_ENERGY_POINT8H << 8)| AX_ENERGY_POINT8L)
+15:0	AX_ENERGY_AREA1[15:0]	X轴关注带 1 加速度谱能量 AX_ENERGY_AREA1=((AX_ENERGY_AREA1H<< 8| AX_ENERGY_AREA1L)
+15:0	AX_ENERGY_AREA2[15:0]	X轴关注带 2 加速度谱能量 AX_ENERGY_AREA2=((AX_ENERGY_AREA2H<< 8| AX_ENERGY_AREA2L)
+15:0	AX_ENERGY_AREA3[15:0]	X轴关注带 3 加速度谱能量 AX_ENERGY_AREA3=((AX_ENERGY_AREA3H<< 8| AX_ENERGY_AREA3L)
+15:0	AX_ENERGY_AREA4[15:0]	X轴关注带 4 加速度谱能量 AX_ENERGY_AREA4=((AX_ENERGY_AREA4H<< 8| AX_ENERGY_AREA4L)
+15:0	AX_ENERGY_AREA5[15:0]	X轴关注带 5 加速度谱能量 AX_ENERGY_AREA5=((AX_ENERGY_AREA5H<< 8| AX_ENERGY_AREA5L)
+15:0	AX_ENERGY_AREA6[15:0]	X轴关注带 6 加速度谱能量 AX_ENERGY_AREA6=((AX_ENERGY_AREA6H<< 8| AX_ENERGY_AREA6L)
+15:0	AX_ENERGY[15:0]	X轴加速度谱总能量AX_ENERGY=((AX_ENERGYH<< 8| AX_ENERGYL)
+示例：
+发送：50 03 00 NAME 00 01 CRCH CRCL
+ 返回：50 03 06 NAMEH NAMEL CRCH CRCL 
+NAME[15:0]=(((short)NAMEH <<8)|NAMEL);
+示例：
+发送：50 03 00 6E 00 01 E8 56（X轴关注点 1 加速度谱能量）
+ 返回：50 03 06 AX_ENERGY_POINT1H AX_ENERGY_POINT1L CRCH CRCL 
+AX_ENERGY_POINT1[15:0]=(((short)AX_ENERGY_POINT1H <<8)|AX_ENERGY_POINT1L);
+     
+Y轴关注点与关注带加速度谱能量
+寄存器名称: AY_ENERGY_POINT1~AY_ENERGY
+寄存器地址: 125~139 (0x7D~0x8B)
+读写方向: R
+默认值: 0x0000
+Bit	NAME	FUNCTION
+15:0	AY_ENERGY_POINT1[15:0]	Y轴关注点 1 加速度谱能量AY_ENERGY_POINT1=((AY_ENERGY_POINT1H << 8)| AY_ENERGY_POINT1L)
+15:0	AY_ENERGY_POINT2[15:0]	Y轴关注点 2 加速度谱能量AY_ENERGY_POINT2=((AY_ENERGY_POINT2H << 8)| AY_ENERGY_POINT2L)
+15:0	AY_ENERGY_POINT3[15:0]	Y轴关注点 3 加速度谱能量AY_ENERGY_POINT3=((AY_ENERGY_POINT3H << 8)| AY_ENERGY_POINT3L)
+15:0	AY_ENERGY_POINT4[15:0]	Y轴关注点 4 加速度谱能量AY_ENERGY_POINT1=((AY_ENERGY_POINT4H << 8)| AY_ENERGY_POINT4L)
+15:0	AY_ENERGY_POINT5[15:0]	Y轴关注点 5 加速度谱能量AY_ENERGY_POINT5=((AY_ENERGY_POINT5H << 8)| AY_ENERGY_POINT5L)
+15:0	AY_ENERGY_POINT6[15:0]	Y轴关注点 6 加速度谱能量AY_ENERGY_POINT6=((AY_ENERGY_POINT6H << 8)| AY_ENERGY_POINT6L)
+15:0	AY_ENERGY_POINT7[15:0]	Y轴关注点 7 加速度谱能量AY_ENERGY_POINT7=((AY_ENERGY_POINT7H << 8)| AY_ENERGY_POINT7L)
+15:0	AY_ENERGY_POINT8[15:0]	Y轴关注点 8 加速度谱能量AY_ENERGY_POINT8=((AY_ENERGY_POINT8H << 8)| AY_ENERGY_POINT8L)
+15:0	AY_ENERGY_AREA1[15:0]	Y轴关注带 1 加速度谱能量 AY_ENERGY_AREA1=((AY_ENERGY_AREA1H<< 8| AY_ENERGY_AREA1L)
+15:0	AY_ENERGY_AREA2[15:0]	Y轴关注带 2 加速度谱能量 AY_ENERGY_AREA2=((AY_ENERGY_AREA2H<< 8| AY_ENERGY_AREA2L)
+15:0	AY_ENERGY_AREA3[15:0]	Y轴关注带 3 加速度谱能量 AY_ENERGY_AREA3=((AY_ENERGY_AREA3H<< 8| AY_ENERGY_AREA3L)
+15:0	AY_ENERGY_AREA4[15:0]	Y轴关注带 4 加速度谱能量 AY_ENERGY_AREA4=((AY_ENERGY_AREA4H<< 8| AY_ENERGY_AREA4L)
+15:0	AY_ENERGY_AREA5[15:0]	Y轴关注带 5 加速度谱能量 AY_ENERGY_AREA5=((AY_ENERGY_AREA5H<< 8| AY_ENERGY_AREA5L)
+15:0	AY_ENERGY_AREA6[15:0]	Y轴关注带 6 加速度谱能量 AY_ENERGY_AREA6=((AY_ENERGY_AREA6H<< 8| AY_ENERGY_AREA6L)
+15:0	AY_ENERGY[15:0]	Y轴加速度谱总能量AY_ENERGY=((AY_ENERGYH<< 8| AY_ENERGYL)
+示例：
+发送：50 03 00 NAME 00 01 CRCH CRCL
+ 返回：50 03 06 NAMEH NAMEL CRCH CRCL 
+NAME[15:0]=(((short)NAMEH <<8)|NAMEL);
+示例：
+发送：50 03 00 7D 00 01 19 93（Y轴关注点 1 加速度谱能量）
+ 返回：50 03 06 AY_ENERGY_POINT1H AY_ENERGY_POINT1L CRCH CRCL 
+AY_ENERGY_POINT1[15:0]=(((short)AY_ENERGY_POINT1H <<8)|AY_ENERGY_POINT1L);
+     
+Z轴关注点与关注带加速度谱能量
+寄存器名称: AZ_ENERGY_POINT1~AZ_ENERGY
+寄存器地址: 140~154 (0x8C~0x9A)
+读写方向: R
+默认值: 0x0000
+Bit	NAME	FUNCTION
+15:0	AZ_ENERGY_POINT1[15:0]	Z轴关注点 1 加速度谱能量AZ_ENERGY_POINT1=((AZ_ENERGY_POINT1H << 8)| AZ_ENERGY_POINT1L)
+15:0	AZ_ENERGY_POINT2[15:0]	Z轴关注点 2 加速度谱能量AZ_ENERGY_POINT2=((AZ_ENERGY_POINT2H << 8)| AZ_ENERGY_POINT2L)
+15:0	AZ_ENERGY_POINT3[15:0]	Z轴关注点 3 加速度谱能量AZ_ENERGY_POINT3=((AZ_ENERGY_POINT3H << 8)| AZ_ENERGY_POINT3L)
+15:0	AZ_ENERGY_POINT4[15:0]	Z轴关注点 4 加速度谱能量AZ_ENERGY_POINT1=((AZ_ENERGY_POINT4H << 8)| AZ_ENERGY_POINT4L)
+15:0	AZ_ENERGY_POINT5[15:0]	Z轴关注点 5 加速度谱能量AZ_ENERGY_POINT5=((AZ_ENERGY_POINT5H << 8)| AZ_ENERGY_POINT5L)
+15:0	AZ_ENERGY_POINT6[15:0]	Z轴关注点 6 加速度谱能量AY_ENERGY_POINT6=((AY_ENERGY_POINT6H << 8)| AY_ENERGY_POINT6L)
+15:0	AZ_ENERGY_POINT7[15:0]	Z轴关注点 7 加速度谱能量AY_ENERGZ_POINT7=((AZ_ENERGY_POINT7H << 8)| AZ_ENERGY_POINT7L)
+15:0	AZ_ENERGY_POINT8[15:0]	Z轴关注点 8 加速度谱能量AZ_ENERGY_POINT8=((AZ_ENERGY_POINT8H << 8)| AZ_ENERGY_POINT8L)
+15:0	AZ_ENERGY_AREA1[15:0]	Z轴关注带 1 加速度谱能量 AZ_ENERGY_AREA1=((AZ_ENERGY_AREA1H<< 8| AZ_ENERGY_AREA1L)
+15:0	AZ_ENERGY_AREA2[15:0]	Y轴关注带 2 加速度谱能量 AZ_ENERGY_AREA2=((AZ_ENERGY_AREA2H<< 8| AZ_ENERGY_AREA2L)
+15:0	AZ_ENERGY_AREA3[15:0]	Z轴关注带 3 加速度谱能量 AZ_ENERGY_AREA3=((AZ_ENERGY_AREA3H<< 8| AZ_ENERGY_AREA3L)
+15:0	AZ_ENERGY_AREA4[15:0]	Z轴关注带 4 加速度谱能量 AZ_ENERGY_AREA4=((AZ_ENERGY_AREA4H<< 8| AZ_ENERGY_AREA4L)
+15:0	AZ_ENERGY_AREA5[15:0]	Z轴关注带 5 加速度谱能量 AZ_ENERGY_AREA5=((AZ_ENERGY_AREA5H<< 8| AZ_ENERGY_AREA5L)
+15:0	AZ_ENERGY_AREA6[15:0]	Z轴关注带 6 加速度谱能量 AZ_ENERGY_AREA6=((AZ_ENERGY_AREA6H<< 8| AZ_ENERGY_AREA6L)
+15:0	AZ_ENERGY[15:0]	Z轴加速度谱总能量AZ_ENERGY=((AZ_ENERGYH<< 8| AZ_ENERGYL)
+示例：
+发送：50 03 00 NAME 00 01 CRCH CRCL
+ 返回：50 03 06 NAMEH NAMEL CRCH CRCL 
+NAME[15:0]=(((short)NAMEH <<8)|NAMEL);
+示例：
+发送：50 03 00 8C 00 01 48 60（Z轴关注点 1 加速度谱能量）
+ 返回：50 03 06 AZ_ENERGY_POINT1H AZ_ENERGY_POINT1L CRCH CRCL 
+AZ_ENERGY_POINT1[15:0]=(((short)AZ_ENERGY_POINT1H <<8)|AZ_ENERGY_POINT1L);
+     
+常见问题说明
+正常模式下回传频率太低
+原因：波特率设置太低
+正常模式下记录数据帧数太少
+原因：正常模式下，是使用一问一答的modbus通信协议，设置的波特率越高，读取数据频率越高
+高速模式下无法退出
+原因：传感器未断电。将传感器断电，然后重新上电，传感器会自动恢复正常模式，此时可使用上位机搜索设备，或者自己添加设备。
+重上电后无数据
+原因1：上位机波特率设置不对，可点击搜索设备
+原因2：串口丢失，可检查串口是否存在，如果搜索不到设备，可以重新插拔三合一或六合一，刷新一下电脑，找到识别到的COM口重新连接即可。
+上位机搜索不到设备
+原因：传感器的地址或波特率可能被修改，耐心等待，需要几分钟的搜索过程。
+加速度幅值和频谱为什么没有了
+只有在频域算法下才会有这两个数据，时域算法是没有的
+版本号查询指令以及版本号解析
