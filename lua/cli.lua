@@ -30,6 +30,7 @@ local cfg_defaults = {
   rx_size = 256,
   rs485_mode = 0,
   modbus_timeout = 1.0,
+  group = "basic",
   flow_scale = 100000.0,
   volume_scale = 10000.0,
   i2c_address = 0x44,
@@ -92,6 +93,20 @@ local function parse_args(argv)
       cfg.cam_read_chunk_size = tonumber(next_value())
     elseif a == "--baud" or a == "-b" then
       cfg.baud = tonumber(next_value())
+    elseif a == "--unit-id" then
+      cfg.unit_id = tonumber(next_value())
+    elseif a == "--address" then
+      cfg.address = tonumber(next_value())
+    elseif a == "--count" then
+      cfg.count = tonumber(next_value())
+    elseif a == "--rx-size" then
+      cfg.rx_size = tonumber(next_value())
+    elseif a == "--rs485-mode" then
+      cfg.rs485_mode = tonumber(next_value())
+    elseif a == "--modbus-timeout" then
+      cfg.modbus_timeout = tonumber(next_value())
+    elseif a == "--group" then
+      cfg.group = next_value()
     elseif a == "--instance" or a == "-i" then
       cfg.instance = tonumber(next_value())
     elseif a == "--tx-pin" then
@@ -125,6 +140,7 @@ local function print_usage()
   print("  --script, -s <NAME>       Sensor script to run (default: flow)")
   print("  --backend <TYPE>          Backend type: rest|native|auto (default: rest)")
   print("  --action <NAME>           Script action (e.g., version|capture|set-resolution)")
+  print("  --group <NAME>            Vibration group: basic|all|full-block|accel|velocity|temp|displacement|frequency|x-advanced|y-advanced|z-advanced")
   print("  --output, -o <FILE>       Output file for capture scripts (default: capture.jpg)")
   print("  --reset                   Reset device/camera before action")
   print("  --cam-serial-num <N>      Camera protocol serial number (for vc0706_compat_camera)")
@@ -132,6 +148,12 @@ local function print_usage()
   print("  --cam-res-code <N>        Camera resolution code (default: 0x55)")
   print("  --cam-read-chunk-size <N> Camera read chunk size in bytes (for vc0706_compat_camera)")
   print("  --baud, -b <RATE>         UART baud rate (default: 9600)")
+  print("  --unit-id <N>             Modbus unit id (default: 1, vibration sensor commonly 80/0x50)")
+  print("  --address <N>             Modbus register start address (for raw reads)")
+  print("  --count <N>               Modbus register count (for raw reads)")
+  print("  --rx-size <N>             RS485 RX buffer size (default: 256)")
+  print("  --rs485-mode <N>          RS485 mode resource value (default: 0)")
+  print("  --modbus-timeout <SEC>    Modbus timeout in seconds (default: 1.0)")
   print("  --instance, -i <ID>       LwM2M object instance (default: 0)")
   print("  --tx-pin <PIN>            Optional TX pin override")
   print("  --rx-pin <PIN>            Optional RX pin override")
@@ -141,6 +163,7 @@ local function print_usage()
   print("")
   print("Available scripts:")
   print("  flow          Flow meter via RS485/Modbus")
+  print("  vibration     Vibration sensor via RS485/Modbus")
   print("  sht3x_temp    SHT3x temperature & humidity via I2C")
   print("  vc0706_camera VC0706 camera over RS485 (version/capture/set-resolution)")
   print("  vc0706_compat_camera VC0706-like UART camera variant (version/capture/set-resolution)")
@@ -239,9 +262,16 @@ local function main()
   _G.RS485_RX_SIZE = cfg.rx_size
   _G.RS485_MODE = cfg.rs485_mode
   _G.RS485_UNIT_ID = cfg.unit_id
+  _G.RS485_ADDRESS = cfg.address
+  _G.RS485_COUNT = cfg.count
+  _G.RS485_MODBUS_TIMEOUT = cfg.modbus_timeout
   _G.RS485_TX_PIN = cfg.tx_pin
   _G.RS485_RX_PIN = cfg.rx_pin
   _G.RS485_HTTP_TIMEOUT = cfg.http_timeout
+
+  _G.VIBRATION_ACTION = cfg.action
+  _G.VIBRATION_GROUP = cfg.group
+  _G.VIBRATION_QUIET = cfg.quiet
 
   -- Set up UART globals
   _G.UART_BACKEND = cfg.backend
