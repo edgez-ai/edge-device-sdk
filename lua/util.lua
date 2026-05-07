@@ -125,6 +125,32 @@ local function util_get_server_sec_of_year()
   return tonumber(runtime.server_sec_of_year) or 0, runtime.server_sec_of_year_valid == true
 end
 
+local function util_get_day_of_week()
+  local sec_of_week, valid = util_get_server_sec_of_year()
+  if not valid then
+    return 0, false
+  end
+  return math.floor((tonumber(sec_of_week) or 0) % 604800 / 86400), true
+end
+
+local function util_get_hour_of_day()
+  local sec_of_week, valid = util_get_server_sec_of_year()
+  if not valid then
+    return 0, false
+  end
+  local sec_of_day = (tonumber(sec_of_week) or 0) % 86400
+  return math.floor(sec_of_day / 3600), true
+end
+
+local function util_get_min_of_day()
+  local sec_of_week, valid = util_get_server_sec_of_year()
+  if not valid then
+    return 0, false
+  end
+  local sec_of_day = (tonumber(sec_of_week) or 0) % 86400
+  return math.floor(sec_of_day / 60), true
+end
+
 local function util_sleep(seconds)
   local delay = tonumber(seconds) or 0
   if delay <= 0 then
@@ -202,6 +228,12 @@ _G.util_log = util_log
 _G.util_get_sample_runtime = util_get_sample_runtime
 _G.util_get_sample_counter = util_get_sample_counter
 _G.util_get_server_sec_of_year = util_get_server_sec_of_year
+_G.util_get_day_of_week = util_get_day_of_week
+_G.util_get_hour_of_day = util_get_hour_of_day
+_G.util_get_min_of_day = util_get_min_of_day
+_G.day_of_week = util_get_day_of_week
+_G.hour_of_day = util_get_hour_of_day
+_G.min_of_day = util_get_min_of_day
 _G.util_sleep = util_sleep
 _G.util_init_global_buffer = util_init_global_buffer
 _G.util_append_global_buffer = util_append_global_buffer
@@ -220,6 +252,12 @@ return {
   get_sample_runtime = util_get_sample_runtime,
   get_sample_counter = util_get_sample_counter,
   get_server_sec_of_year = util_get_server_sec_of_year,
+  get_day_of_week = util_get_day_of_week,
+  get_hour_of_day = util_get_hour_of_day,
+  get_min_of_day = util_get_min_of_day,
+  day_of_week = util_get_day_of_week,
+  hour_of_day = util_get_hour_of_day,
+  min_of_day = util_get_min_of_day,
   sleep = util_sleep,
   init_global_buffer = util_init_global_buffer,
   append_global_buffer = util_append_global_buffer,
