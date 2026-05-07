@@ -91,6 +91,40 @@ local function util_log(cfg, tag, msg)
   io.stderr:write("[" .. prefix .. "] " .. tostring(msg or "") .. "\n")
 end
 
+local native_util_get_sample_runtime = _G.util_get_sample_runtime
+
+local function util_get_sample_runtime()
+  if type(native_util_get_sample_runtime) == "function" then
+    local ok, runtime = pcall(native_util_get_sample_runtime)
+    if ok and type(runtime) == "table" then
+      local sample_counter = tonumber(runtime.sample_counter) or 0
+      local server_sec_of_year = tonumber(runtime.server_sec_of_year) or 0
+      local server_sec_of_year_valid = runtime.server_sec_of_year_valid == true
+      return {
+        sample_counter = sample_counter,
+        server_sec_of_year = server_sec_of_year,
+        server_sec_of_year_valid = server_sec_of_year_valid,
+      }
+    end
+  end
+
+  return {
+    sample_counter = 0,
+    server_sec_of_year = 0,
+    server_sec_of_year_valid = false,
+  }
+end
+
+local function util_get_sample_counter()
+  local runtime = util_get_sample_runtime()
+  return tonumber(runtime.sample_counter) or 0
+end
+
+local function util_get_server_sec_of_year()
+  local runtime = util_get_sample_runtime()
+  return tonumber(runtime.server_sec_of_year) or 0, runtime.server_sec_of_year_valid == true
+end
+
 local function util_sleep(seconds)
   local delay = tonumber(seconds) or 0
   if delay <= 0 then
@@ -165,6 +199,9 @@ _G.util_build_read_holding_request = util_build_read_holding_request
 _G.util_extract_modbus_frame = util_extract_modbus_frame
 _G.util_decode_bcd_32 = util_decode_bcd_32
 _G.util_log = util_log
+_G.util_get_sample_runtime = util_get_sample_runtime
+_G.util_get_sample_counter = util_get_sample_counter
+_G.util_get_server_sec_of_year = util_get_server_sec_of_year
 _G.util_sleep = util_sleep
 _G.util_init_global_buffer = util_init_global_buffer
 _G.util_append_global_buffer = util_append_global_buffer
@@ -180,6 +217,9 @@ return {
   extract_modbus_frame = util_extract_modbus_frame,
   decode_bcd_32 = util_decode_bcd_32,
   log = util_log,
+  get_sample_runtime = util_get_sample_runtime,
+  get_sample_counter = util_get_sample_counter,
+  get_server_sec_of_year = util_get_server_sec_of_year,
   sleep = util_sleep,
   init_global_buffer = util_init_global_buffer,
   append_global_buffer = util_append_global_buffer,

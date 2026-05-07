@@ -328,6 +328,10 @@ local function main()
 
   print("\n--- Reading Sensor Values (" .. script_name .. ") ---")
   for i, item in ipairs(result) do
+    if script_name == "vibration" and type(item) == "table" and item.persist_buffer == true then
+      goto continue
+    end
+
     if type(item) == "table" then
       if item.object ~= nil or item.resource ~= nil then
         print(string.format(
@@ -349,6 +353,8 @@ local function main()
     else
       print(string.format("[%d] value=%s", i, tostring(item)))
     end
+
+    ::continue::
   end
   print("\n✓ Script '" .. script_name .. "' completed successfully")
   return 0
