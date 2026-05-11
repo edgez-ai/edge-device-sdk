@@ -30,6 +30,7 @@ local cfg_defaults = {
   rx_size = 256,
   rs485_mode = 0,
   modbus_timeout = 1.0,
+  rs485_rx_chunk_timeout = 0.5,
   group = "basic",
   flow_scale = 100000.0,
   volume_scale = 10000.0,
@@ -105,6 +106,8 @@ local function parse_args(argv)
       cfg.rs485_mode = tonumber(next_value())
     elseif a == "--modbus-timeout" then
       cfg.modbus_timeout = tonumber(next_value())
+    elseif a == "--rs485-rx-chunk-timeout" then
+      cfg.rs485_rx_chunk_timeout = tonumber(next_value())
     elseif a == "--group" then
       cfg.group = next_value()
     elseif a == "--instance" or a == "-i" then
@@ -154,6 +157,7 @@ local function print_usage()
   print("  --rx-size <N>             RS485 RX buffer size (default: 256)")
   print("  --rs485-mode <N>          RS485 mode resource value (default: 0)")
   print("  --modbus-timeout <SEC>    Modbus timeout in seconds (default: 1.0)")
+  print("  --rs485-rx-chunk-timeout <SEC> Timeout for RS485 rx chunk poll requests (default: 0.5)")
   print("  --instance, -i <ID>       LwM2M object instance (default: 0)")
   print("  --tx-pin <PIN>            Optional TX pin override")
   print("  --rx-pin <PIN>            Optional RX pin override")
@@ -265,6 +269,7 @@ local function main()
   _G.RS485_ADDRESS = cfg.address
   _G.RS485_COUNT = cfg.count
   _G.RS485_MODBUS_TIMEOUT = cfg.modbus_timeout
+  _G.RS485_RX_CHUNK_TIMEOUT = cfg.rs485_rx_chunk_timeout
   _G.RS485_TX_PIN = cfg.tx_pin
   _G.RS485_RX_PIN = cfg.rx_pin
   _G.RS485_HTTP_TIMEOUT = cfg.http_timeout

@@ -138,6 +138,7 @@ function RestBackend:new(cfg)
       client = cfg.client,
       instance = cfg.instance or 0,
       http_timeout = cfg.http_timeout or 5.0,
+      rx_chunk_timeout = cfg.rx_chunk_timeout or 0.5,
     },
   }
   return setmetatable(obj, RestBackend)
@@ -195,11 +196,12 @@ function RestBackend:put_bytes(res_id, payload)
   return true
 end
 
-function RestBackend:get_payload(res_id)
+function RestBackend:get_payload(res_id, timeout_override)
+  local timeout = tonumber(timeout_override) or tonumber(self.cfg.http_timeout) or 5.0
   local url = self:build_resource_url(res_id)
   local cmd = string.format(
     "curl -fsS -m %s -H %s %s",
-    tostring(self.cfg.http_timeout),
+    tostring(timeout),
     shell_quote("Accept: application/octet-stream"),
     shell_quote(url)
   )
@@ -256,7 +258,8 @@ function RestBackend:write(payload)
 end
 
 function RestBackend:read_chunk()
-  local ok, out = self:get_payload(RS485_RESOURCES.rx_chunk)
+  local poll_timeout = tonumber(self.cfg.rx_chunk_timeout) or 0.5
+  local ok, out = self:get_payload(RS485_RESOURCES.rx_chunk, poll_timeout)
   if not ok then
     return ""
   end
@@ -321,6 +324,7 @@ local function current_cfg(baud)
     rx_size = rawget(_G, "RS485_RX_SIZE") or 256,
     rs485_mode = rawget(_G, "RS485_MODE") or 0,
     http_timeout = rawget(_G, "RS485_HTTP_TIMEOUT") or 5.0,
+    rx_chunk_timeout = rawget(_G, "RS485_RX_CHUNK_TIMEOUT") or 0.5,
   }
 end
 

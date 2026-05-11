@@ -17,8 +17,15 @@ import argparse
 import sys
 import time
 import threading
+from pathlib import Path
 from typing import Optional
 from datetime import datetime, timezone
+
+# Ensure imports work when running this file directly from python/examples.
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 # REST API imports
 from core import Lwm2mRestClient, RestConfig
@@ -190,9 +197,19 @@ def echo_test_loop(session: UartSession, args: argparse.Namespace) -> None:
     
     read_count = 0
     empty_count = 0
+    next_hello_time = time.time() + args.hello_interval if args.hello_interval > 0 else None
     
     while not stop_event.is_set():
         timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S.%f")[:-3]
+
+        # Periodically send a keepalive hello message.
+        if next_hello_time is not None and time.time() >= next_hello_time:
+            try:
+                session.write(b"hello\r\n")
+                print(f"[{timestamp}] Sent periodic message: 'hello'")
+            except Exception as e:
+                print(f"[{timestamp}] Failed to send periodic hello: {e}")
+            next_hello_time = time.time() + args.hello_interval
         
         try:
             # Read from RS485
@@ -258,8 +275,6 @@ def interactive_mode(session: UartSession, args: argparse.Namespace) -> None:
         daemon=True
     )
     reader_thread.start()
-    
-    session = None
 
     try:
         while not stop_event.is_set():
@@ -398,6 +413,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=50,
         help="Empty reads between heartbeat messages"
+    )
+    parser.add_argument(
+        "--hello-interval",
+        type=float,
+        default=5.0,
+        help="Send 'hello' every N seconds (default: 5, set <= 0 to disable)"
     )
     parser.add_argument(
         "--interactive",
