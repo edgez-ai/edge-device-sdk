@@ -113,17 +113,30 @@ local function verify_response(response, cmd)
 end
 
 local function stop_frame_and_get_length(max_attempts)
-  local ok, err = send_command(CMD_FBUF_CTRL, string.char(FBUF_STOP_FRAME), "STOP_FRAME")
-  if not ok then
-    return nil, err
-  end
-
-  local response = read_response(2.0, 64)
-  if not (#response >= 5 and verify_response(response, CMD_FBUF_CTRL)) then
-    return nil, "failed to stop frame"
-  end
-
   local attempts = tonumber(max_attempts) or 3
+  local stop_ok = false
+  local stop_err = "failed to stop frame"
+
+  for attempt = 1, attempts do
+    local ok, err = send_command(CMD_FBUF_CTRL, string.char(FBUF_STOP_FRAME), "STOP_FRAME")
+    if ok then
+      local response = read_response(2.0, 64)
+      if #response >= 5 and verify_response(response, CMD_FBUF_CTRL) then
+        stop_ok = true
+        break
+      end
+    else
+      stop_err = err
+    end
+
+    camera_log(string.format("Retry STOP_FRAME attempt %d/%d", attempt, attempts))
+    drain_buffer(0.1)
+  end
+
+  if not stop_ok then
+    return nil, stop_err
+  end
+
   local frame_len = 0
   for _ = 1, attempts do
     drain_buffer(0.1)
