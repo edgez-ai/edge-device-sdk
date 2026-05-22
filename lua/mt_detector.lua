@@ -399,23 +399,24 @@ local function read_frame_buffer_to_global(length, max_retries)
     end
 
     if #response < 10 then
-      return nil, "short read response at offset " .. tostring(offset) .. ": " .. tostring(#response) .. " bytes"
-    end
-
-    if not verify_response(response, CMD_READ_FBUF) then
-      return nil, "invalid read-fbuf response header at offset " .. tostring(offset)
-    end
-
-    local payload_start = 6
-    local payload_end = payload_start + chunk_size - 1
-    if #response < payload_end then
-      return nil, "chunk too short at offset " .. tostring(offset)
-    end
-
-    local payload = response:sub(payload_start, payload_end)
-    local write_img_ok, write_img_err = util_write_global_buffer_at(offset, payload)
-    if not write_img_ok then
-      return nil, "failed to write image payload at offset " .. tostring(offset) .. ": " .. tostring(write_img_err)
+      camera_log("short read response at offset " .. tostring(offset) .. ": " .. tostring(#response) .. " bytes, writing dummy")
+      util_write_global_buffer_at(offset, string.rep("\0", chunk_size))
+    elseif not verify_response(response, CMD_READ_FBUF) then
+      camera_log("invalid read-fbuf response header at offset " .. tostring(offset) .. ", writing dummy")
+      util_write_global_buffer_at(offset, string.rep("\0", chunk_size))
+    else
+      local payload_start = 6
+      local payload_end = payload_start + chunk_size - 1
+      if #response < payload_end then
+        camera_log("chunk too short at offset " .. tostring(offset) .. ", writing dummy")
+        util_write_global_buffer_at(offset, string.rep("\0", chunk_size))
+      else
+        local payload = response:sub(payload_start, payload_end)
+        local write_img_ok, write_img_err = util_write_global_buffer_at(offset, payload)
+        if not write_img_ok then
+          return nil, "failed to write image payload at offset " .. tostring(offset) .. ": " .. tostring(write_img_err)
+        end
+      end
     end
 
     local regs, regs_err = read_holding_registers(FULL_BLOCK_START, FULL_BLOCK_COUNT)
@@ -491,12 +492,14 @@ local ok, err = uart_connect(cam_baud)
 if not ok then
   error("failed to open rs485: " .. tostring(err))
 end
+
+uart_sleep(3.0)
+
 ok, err = rs485_connect(cfg.baud)
 if not ok then
   rs485_safe_close()
   error("failed to open rs485: " .. tostring(err))
 end
-uart_sleep(3.0)
 
 if cam_reset then
   local reset_ok, reset_err = reset_camera()
