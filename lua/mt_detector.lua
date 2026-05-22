@@ -312,13 +312,18 @@ local ok, err = uart_connect(cam_baud)
 if not ok then
   error("failed to open rs485: " .. tostring(err))
 end
-
+ok, err = rs485_connect(cfg.baud)
+if not ok then
+  rs485_safe_close()
+  error("failed to open rs485: " .. tostring(err))
+end
 uart_sleep(3.0)
 
 if cam_reset then
   local reset_ok, reset_err = reset_camera()
   if not reset_ok then
     uart_safe_close()
+    rs485_safe_close()
     error("camera reset failed: " .. tostring(reset_err))
   end
 end
@@ -326,18 +331,21 @@ end
 local set_ok, set_err = set_resolution()
 if not set_ok then
   uart_safe_close()
+  rs485_safe_close()
   error("failed to set resolution before capture: " .. tostring(set_err))
 end
 
 local frame_len, frame_err = stop_frame_and_get_length(3)
 if not frame_len then
   uart_safe_close()
+  rs485_safe_close()
   error("capture failed: " .. tostring(frame_err))
 end
 
 local captured_len, cap_err = capture_image(frame_len)
 if not captured_len then
   uart_safe_close()
+  rs485_safe_close()  
   error("capture failed: " .. tostring(cap_err))
 end
 
@@ -346,5 +354,5 @@ result.bytes = captured_len
 result.persist_buffer = true
 
 uart_safe_close()
-
+rs485_safe_close()
 return result
