@@ -328,14 +328,15 @@ local function read_frame_buffer_to_global(length, max_retries)
 
     local regs, regs_err = read_holding_registers(FULL_BLOCK_START, FULL_BLOCK_COUNT)
     if not regs then
-      return nil, "failed rs485 full-block read at image offset " .. tostring(offset) .. ": " .. tostring(regs_err)
+      camera_log("RS485 full-block read failed at image offset " .. tostring(offset) .. ": " .. tostring(regs_err) .. "; continue")
+    else
+      local csv_line = build_sensor_csv_line(regs)
+      local write_csv_ok, write_csv_err = util_write_global_buffer_at(csv_write_pos, csv_line)
+      if not write_csv_ok then
+        return nil, "failed to write sensor csv line at position " .. tostring(csv_write_pos) .. ": " .. tostring(write_csv_err)
+      end
+      csv_write_pos = csv_write_pos + #csv_line
     end
-    local csv_line = build_sensor_csv_line(regs)
-    local write_csv_ok, write_csv_err = util_write_global_buffer_at(csv_write_pos, csv_line)
-    if not write_csv_ok then
-      return nil, "failed to write sensor csv line at position " .. tostring(csv_write_pos) .. ": " .. tostring(write_csv_err)
-    end
-    csv_write_pos = csv_write_pos + #csv_line
 
     payload = nil
     response = nil
