@@ -26,6 +26,10 @@ local FBUF_RESUME_FRAME = 0x02
 
 local READ_CHUNK_SIZE = 250
 local MAX_FRAME_SIZE = 500000
+local FULL_BLOCK_START = 0x34
+local FULL_BLOCK_END = 0x9A
+local FULL_BLOCK_COUNT = FULL_BLOCK_END - FULL_BLOCK_START + 1
+local IMAGE_END_MARKER = "/r/n/r/n"
 
 local cam_baud = 921600
 local cam_output =  "capture.jpg"
@@ -123,6 +127,51 @@ local function verify_response(response, cmd)
     and string.byte(response, 2) == SERIAL_NUM
     and string.byte(response, 3) == (cmd & 0xFF)
     and string.byte(response, 4) == 0x00
+end
+
+local function read_holding_registers(address, count)
+  local request = util_build_read_holding_request(cfg.unit_id, address, count)
+  local ok, err = rs485_reset_rx_cursor()
+  if not ok then
+    return nil, "failed to reset rs485 rx cursor: " .. tostring(err)
+  end
+
+  ok, err = rs485_write(request)
+  if not ok then
+    return nil, "failed to write rs485 request: " .. tostring(err)
+  end
+
+  local byte_count = count * 2
+  local deadline = os.clock() + cfg.modbus_timeout
+  local buffer = ""
+
+  while os.clock() < deadline do
+    local chunk = rs485_read_chunk()
+    if chunk and #chunk > 0 then
+      buffer = buffer .. chunk
+      local frame = util_extract_modbus_frame(buffer, cfg.unit_id, 0x03, byte_count)
+      if frame then
+        local payload = frame:sub(4, -3)
+        local regs = {}
+        for i = 1, #payload, 2 do
+          local hi = string.byte(payload, i)
+          local lo = string.byte(payload, i + 1)
+          regs[#regs + 1] = (hi << 8) | lo
+        end
+        return regs
+      end
+    end
+  end
+
+  return nil, "no valid modbus response frame received"
+end
+
+local function build_sensor_csv_line(regs)
+  local parts = {}
+  for i = 1, #regs do
+    parts[#parts + 1] = tostring(regs[i])
+  end
+  return table.concat(parts, ",") .. "\n"
 end
 
   local get_frame_buffer_length
@@ -223,7 +272,9 @@ local function read_frame_buffer_to_global(length, max_retries)
     return nil, "invalid frame length: " .. tostring(total)
   end
 
-  if type(util_init_global_buffer) ~= "function" or type(util_append_global_buffer) ~= "function" then
+  if type(util_init_global_buffer) ~= "function"
+    or type(util_append_global_buffer) ~= "function"
+    or type(util_write_global_buffer_at) ~= "function" then
     return nil, "util global buffer helpers are not available"
   end
 
@@ -232,7 +283,13 @@ local function read_frame_buffer_to_global(length, max_retries)
     return nil, "failed to init global buffer: " .. tostring(init_err)
   end
 
+  local marker_ok, marker_err = util_write_global_buffer_at(total, IMAGE_END_MARKER)
+  if not marker_ok then
+    return nil, "failed to write image marker: " .. tostring(marker_err)
+  end
+
   local offset = 0
+  local csv_lines = {}
 
   while offset < total do
     local chunk_size = math.min(READ_CHUNK_SIZE, total - offset)
@@ -270,6 +327,12 @@ local function read_frame_buffer_to_global(length, max_retries)
       return nil, "failed to append payload at offset " .. tostring(offset) .. ": " .. tostring(append_err)
     end
 
+    local regs, regs_err = read_holding_registers(FULL_BLOCK_START, FULL_BLOCK_COUNT)
+    if not regs then
+      return nil, "failed rs485 full-block read at image offset " .. tostring(offset) .. ": " .. tostring(regs_err)
+    end
+    csv_lines[#csv_lines + 1] = build_sensor_csv_line(regs)
+
     payload = nil
     response = nil
     if collectgarbage then
@@ -281,6 +344,17 @@ local function read_frame_buffer_to_global(length, max_retries)
     local progress = math.floor((offset * 100) / total)
     io.write(string.format("\rRead progress: %d%% (%d/%d)", progress, offset, total))
     io.flush()
+  end
+
+
+
+  local csv_payload = table.concat(csv_lines)
+  if #csv_payload > 0 then
+    local csv_pos = total + #IMAGE_END_MARKER
+    local csv_ok, csv_err = util_write_global_buffer_at(csv_pos, csv_payload)
+    if not csv_ok then
+      return nil, "failed to write sensor csv payload: " .. tostring(csv_err)
+    end
   end
 
   print("")
