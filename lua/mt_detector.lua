@@ -1,5 +1,18 @@
 local result = {}
 
+local cfg = {
+  baud = tonumber(rawget(_G, "RS485_BAUD")) or 9600,
+  unit_id = tonumber(rawget(_G, "RS485_UNIT_ID")) or 0x50,
+  rx_size = tonumber(rawget(_G, "RS485_RX_SIZE")) or 256,
+  rs485_mode = tonumber(rawget(_G, "RS485_MODE")) or 0,
+  modbus_timeout = tonumber(rawget(_G, "RS485_MODBUS_TIMEOUT")) or 1.0,
+  group = tostring(rawget(_G, "VIBRATION_GROUP") or "basic"),
+  action = tostring(rawget(_G, "VIBRATION_ACTION") or "read"),
+  address = tonumber(rawget(_G, "RS485_ADDRESS")) or 0x34,
+  count = tonumber(rawget(_G, "RS485_COUNT")) or 3,
+  quiet = rawget(_G, "VIBRATION_QUIET") == true,
+}
+
 local SERIAL_NUM = 0x00
 
 local CMD_RESET = 0x26
