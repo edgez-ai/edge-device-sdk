@@ -258,10 +258,13 @@ local function read_holding_registers(address, count)
   return nil, "no valid modbus response frame received"
 end
 
-local function build_sensor_csv_line(regs)
+local CSV_COLUMNS = { "ax_g", "ay_g", "az_g", "vx_mm_s", "vy_mm_s", "vz_mm_s", "temp_c" }
+local CSV_HEADER = table.concat(CSV_COLUMNS, ",") .. "\n"
+
+local function build_decoded_csv_line(values)
   local parts = {}
-  for i = 1, #regs do
-    parts[#parts + 1] = tostring(regs[i])
+  for _, col in ipairs(CSV_COLUMNS) do
+    parts[#parts + 1] = string.format("%.4f", values[col] or 0)
   end
   return table.concat(parts, ",") .. "\n"
 end
@@ -382,6 +385,12 @@ local function read_frame_buffer_to_global(length, max_retries)
   local offset = 0
   local csv_write_pos = total + #IMAGE_END_MARKER
 
+  local write_hdr_ok, write_hdr_err = util_write_global_buffer_at(csv_write_pos, CSV_HEADER)
+  if not write_hdr_ok then
+    return nil, "failed to write csv header: " .. tostring(write_hdr_err)
+  end
+  csv_write_pos = csv_write_pos + #CSV_HEADER
+
   while offset < total do
     local chunk_size = math.min(READ_CHUNK_SIZE, total - offset)
     local args = build_read_fbuf_args(offset, chunk_size)
@@ -423,13 +432,13 @@ local function read_frame_buffer_to_global(length, max_retries)
     if not regs then
       camera_log("RS485 full-block read failed at image offset " .. tostring(offset) .. ": " .. tostring(regs_err) .. "; continue")
     else
-      local csv_line = build_sensor_csv_line(regs)
+      local values = decode_full_block(regs)
+      local csv_line = build_decoded_csv_line(values)
       local write_csv_ok, write_csv_err = util_write_global_buffer_at(csv_write_pos, csv_line)
       if not write_csv_ok then
         return nil, "failed to write sensor csv line at position " .. tostring(csv_write_pos) .. ": " .. tostring(write_csv_err)
       end
       csv_write_pos = csv_write_pos + #csv_line
-      local values = decode_full_block(regs)
       for key, value in pairs(values) do
         if type(value) == "number" then
           sums[key] = (sums[key] or 0) + value
@@ -486,6 +495,8 @@ end
 
 
 -- Main execution starts here
+uart_safe_close()
+rs485_safe_close()
 uart_sleep(1.5)
 local ok, err = uart_connect(cam_baud)
 if not ok then
