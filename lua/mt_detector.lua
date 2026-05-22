@@ -446,9 +446,7 @@ local function read_frame_buffer_to_global(length, max_retries)
 
     offset = offset + chunk_size
 
-    local progress = math.floor((offset * 100) / total)
-    io.write(string.format("\rRead progress: %d%% (%d/%d)", progress, offset, total))
-    io.flush()
+
   end
   print("")
   return true
@@ -488,14 +486,15 @@ end
 
 
 -- Main execution starts here
+uart_sleep(1.5)
 local ok, err = uart_connect(cam_baud)
 if not ok then
   error("failed to open rs485: " .. tostring(err))
 end
 
-uart_sleep(1.5)
+uart_sleep(1)
 ok, err = rs485_connect(cfg.baud)
-uart_sleep(1.5)
+uart_sleep(2)
 if not ok then
   rs485_safe_close()
   error("failed to open rs485: " .. tostring(err))
