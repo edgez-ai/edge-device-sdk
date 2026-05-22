@@ -27,7 +27,7 @@ local FBUF_RESUME_FRAME = 0x02
 local READ_CHUNK_SIZE = 250
 local MAX_FRAME_SIZE = 500000
 local FULL_BLOCK_START = 0x34
-local FULL_BLOCK_END = 0x9A
+local FULL_BLOCK_END = 0x40
 local FULL_BLOCK_COUNT = FULL_BLOCK_END - FULL_BLOCK_START + 1
 local IMAGE_END_MARKER = "/r/n/r/n"
 
@@ -273,7 +273,6 @@ local function read_frame_buffer_to_global(length, max_retries)
   end
 
   if type(util_init_global_buffer) ~= "function"
-    or type(util_append_global_buffer) ~= "function"
     or type(util_write_global_buffer_at) ~= "function" then
     return nil, "util global buffer helpers are not available"
   end
@@ -289,7 +288,7 @@ local function read_frame_buffer_to_global(length, max_retries)
   end
 
   local offset = 0
-  local csv_lines = {}
+  local csv_write_pos = total + #IMAGE_END_MARKER
 
   while offset < total do
     local chunk_size = math.min(READ_CHUNK_SIZE, total - offset)
@@ -322,16 +321,21 @@ local function read_frame_buffer_to_global(length, max_retries)
     end
 
     local payload = response:sub(payload_start, payload_end)
-    local append_ok, append_err = util_append_global_buffer(payload)
-    if not append_ok then
-      return nil, "failed to append payload at offset " .. tostring(offset) .. ": " .. tostring(append_err)
+    local write_img_ok, write_img_err = util_write_global_buffer_at(offset, payload)
+    if not write_img_ok then
+      return nil, "failed to write image payload at offset " .. tostring(offset) .. ": " .. tostring(write_img_err)
     end
 
     local regs, regs_err = read_holding_registers(FULL_BLOCK_START, FULL_BLOCK_COUNT)
     if not regs then
       return nil, "failed rs485 full-block read at image offset " .. tostring(offset) .. ": " .. tostring(regs_err)
     end
-    csv_lines[#csv_lines + 1] = build_sensor_csv_line(regs)
+    local csv_line = build_sensor_csv_line(regs)
+    local write_csv_ok, write_csv_err = util_write_global_buffer_at(csv_write_pos, csv_line)
+    if not write_csv_ok then
+      return nil, "failed to write sensor csv line at position " .. tostring(csv_write_pos) .. ": " .. tostring(write_csv_err)
+    end
+    csv_write_pos = csv_write_pos + #csv_line
 
     payload = nil
     response = nil
@@ -345,18 +349,6 @@ local function read_frame_buffer_to_global(length, max_retries)
     io.write(string.format("\rRead progress: %d%% (%d/%d)", progress, offset, total))
     io.flush()
   end
-
-
-
-  local csv_payload = table.concat(csv_lines)
-  if #csv_payload > 0 then
-    local csv_pos = total + #IMAGE_END_MARKER
-    local csv_ok, csv_err = util_write_global_buffer_at(csv_pos, csv_payload)
-    if not csv_ok then
-      return nil, "failed to write sensor csv payload: " .. tostring(csv_err)
-    end
-  end
-
   print("")
   return true
 end
