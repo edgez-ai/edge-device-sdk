@@ -12,24 +12,18 @@ local CMD_READ_FBUF = 0x32
 local FBUF_STOP_FRAME = 0x00
 local FBUF_RESUME_FRAME = 0x02
 
-local READ_CHUNK_SIZE = 128
+local READ_CHUNK_SIZE = 250
 local MAX_FRAME_SIZE = 500000
 
-local cam_baud = tonumber(_G.VC0706_BAUD)
-if not cam_baud then
-  cam_baud = tonumber(_G.RS485_BAUD)
-end
-if not cam_baud or cam_baud == 9600 then
-  cam_baud = 921600
-end
-local cam_action = tostring(_G.VC0706_ACTION or "capture")
-local cam_output = tostring(_G.VC0706_OUTPUT or "capture.jpg")
-local cam_reset = (_G.VC0706_RESET == true)
-local cam_quiet = (_G.VC0706_QUIET == true)
-local cam_tx_pin = _G.VC0706_TX_PIN or _G.RS485_TX_PIN or _G.UART_TX_PIN or 19
-local cam_rx_pin = _G.VC0706_RX_PIN or _G.RS485_RX_PIN or _G.UART_RX_PIN or 20
+local cam_baud = 921600
+local cam_action = "capture"
+local cam_output =  "capture.jpg"
+local cam_reset = false
+local cam_quiet =  false
 
 local log_cfg = { quiet = cam_quiet }
+
+
 
 local function camera_log(msg)
   util_log(log_cfg, "VC0706", msg)
@@ -47,12 +41,12 @@ end
 local function send_command(cmd, args, label)
   local packet = build_command(cmd, args)
 
-  local ok, err = rs485_reset_rx_cursor()
+  local ok, err = uart_reset_rx_cursor()
   if not ok then
     return false, "failed to reset rx cursor: " .. tostring(err)
   end
 
-  ok, err = rs485_write(packet)
+  ok, err = uart_write(packet)
   if not ok then
     return false, "failed to write command payload: " .. tostring(err)
   end
@@ -73,7 +67,7 @@ local function read_response(timeout_seconds, max_len, expected_len)
   local deadline = os.clock() + timeout
 
   while #data < max_bytes and os.clock() < deadline do
-    local chunk = rs485_read_chunk()
+    local chunk = uart_read_chunk()
     if chunk and #chunk > 0 then
       data = data .. chunk
       no_data_count = 0
@@ -85,7 +79,7 @@ local function read_response(timeout_seconds, max_len, expected_len)
       if #data > 0 and no_data_count >= 30 then
         break
       end
-      rs485_sleep(0.05)
+      uart_sleep(0.05)
     end
   end
 
@@ -101,11 +95,11 @@ local function drain_buffer(timeout_seconds)
   local drained = 0
   local deadline = os.clock() + timeout
   while os.clock() < deadline do
-    local chunk = rs485_read_chunk()
+    local chunk = uart_read_chunk()
     if chunk and #chunk > 0 then
       drained = drained + #chunk
     else
-      rs485_sleep(0.05)
+      uart_sleep(0.05)
     end
   end
   if drained > 0 then
@@ -303,26 +297,9 @@ local function reset_camera()
 end
 
 local function set_resolution()
-  local args = string.char(0x04, 0x01, 0x00, 0x19, 0x00)
-  local ok, err = send_command(CMD_SET_DOWNSIZE, args, "SET_RESOLUTION")
-  if not ok then
-    return false, err
-  end
 
-  local response = read_response(2.0, 64)
-  if #response >= 5 then
-    local ack = response:sub(1, 5)
-    local expected = string.char(0x76, SERIAL_NUM, CMD_SET_DOWNSIZE, 0x01, 0x00)
-    if ack == expected then
-      return true
-    end
-  end
-
-  if #response >= 4 and verify_response(response, CMD_SET_DOWNSIZE) then
     return true
-  end
 
-  return false, "resolution command not acknowledged"
 end
 
 local function capture_image()
@@ -354,24 +331,18 @@ local function capture_image()
 end
 
 local function run_action()
-  _G.RS485_BAUD = cam_baud
-  if cam_tx_pin ~= nil then
-    _G.RS485_TX_PIN = cam_tx_pin
-  end
-  if cam_rx_pin ~= nil then
-    _G.RS485_RX_PIN = cam_rx_pin
-  end
-
-  local ok, err = rs485_connect(cam_baud)
+  local ok, err = uart_connect(cam_baud)
   if not ok then
     return false, "failed to open rs485: " .. tostring(err)
   end
+
+  uart_sleep(3.0)
 
   local success, msg, extra
   if cam_reset then
     local reset_ok, reset_err = reset_camera()
     if not reset_ok then
-      rs485_safe_close()
+      uart_safe_close()
       return false, "camera reset failed: " .. tostring(reset_err)
     end
   end
@@ -387,13 +358,13 @@ local function run_action()
   elseif cam_action == "capture" then
     local set_ok, set_err = set_resolution()
     if not set_ok then
-      rs485_safe_close()
+      uart_safe_close()
       return false, "failed to set resolution before capture: " .. tostring(set_err)
     end
 
     local captured_len, cap_err = capture_image()
     if not captured_len then
-      rs485_safe_close()
+      uart_safe_close()
       return false, "capture failed: " .. tostring(cap_err)
     end
 
@@ -405,11 +376,11 @@ local function run_action()
       persist_buffer = true,
     }
   else
-    rs485_safe_close()
+    uart_safe_close()
     return false, "unsupported action: " .. tostring(cam_action)
   end
 
-  rs485_safe_close()
+  uart_safe_close()
   if not success then
     return false, msg
   end
