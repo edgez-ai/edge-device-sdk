@@ -112,6 +112,9 @@ local function verify_response(response, cmd)
     and string.byte(response, 4) == 0x00
 end
 
+  local get_frame_buffer_length
+  local resume_frame
+
 local function stop_frame_and_get_length(max_attempts)
   local attempts = tonumber(max_attempts) or 3
   local stop_ok = false
@@ -150,7 +153,7 @@ local function stop_frame_and_get_length(max_attempts)
   return nil, "failed to get frame length"
 end
 
-local function resume_frame()
+resume_frame = function()
   local ok, err = send_command(CMD_FBUF_CTRL, string.char(FBUF_RESUME_FRAME), "RESUME_FRAME")
   if not ok then
     return false, err
@@ -163,7 +166,7 @@ local function resume_frame()
   return #response > 0, "failed to resume frame"
 end
 
-local function get_frame_buffer_length()
+get_frame_buffer_length = function()
   local ok, err = send_command(CMD_GET_FBUF_LEN, string.char(0x00), "GET_FBUF_LEN")
   if not ok then
     return 0, err
