@@ -10,12 +10,12 @@ local CMD_READ_FBUF = 0x32
 local FBUF_STOP_FRAME = 0x00
 local FBUF_RESUME_FRAME = 0x02
 
-local READ_CHUNK_SIZE = 255
+local READ_CHUNK_SIZE = 250
 local MAX_FRAME_SIZE = 500000
 
 local cam_baud = 921600
 local cam_output =  "capture.jpg"
-local cam_reset = true
+local cam_reset = false
 local cam_quiet =  false
 
 local log_cfg = { quiet = cam_quiet }
