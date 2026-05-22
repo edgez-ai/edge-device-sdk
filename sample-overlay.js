@@ -12,32 +12,33 @@ function render(ctx, gfx) {
     return;
   }
 
-  // ── Decode raw registers to physical units (mirrors mt_detector.lua) ─────────
-  // Full-block register layout (FULL_BLOCK_START = 0x34, 13 registers):
-  //   col 0-2  → accel ax,ay,az   toSigned16(v) / 32768 * 16  (g)
-  //   col 6-8  → velocity vx,vy,vz  v / 100                   (mm/s)
-  //   col 12   → temperature  toSigned16(v) / 100              (°C)
-  function toSigned16(v) {
-    return (v & 0x8000) !== 0 ? v - 0x10000 : v;
-  }
+  // ── CSV columns (decoded by mt_detector.lua): ────────────────────────────────
+  //   0:ax_g  1:ay_g  2:az_g  3:vx_mm_s  4:vy_mm_s  5:vz_mm_s  6:temp_c
 
   var GROUPS = [
     {
       label: "Acceleration (g)",
-      min: 0, max: 0.01,
+      min: -0.5, max: 0.5,
       channels: [
-        { label: "ax", col: 0,  color: "#ef4444", conv: function(v) { return toSigned16(v) / 32768 * 16; } },
-        { label: "ay", col: 1,  color: "#f97316", conv: function(v) { return toSigned16(v) / 32768 * 16; } },
-        { label: "az", col: 2,  color: "#facc15", conv: function(v) { return toSigned16(v) / 32768 * 16; } },
+        { label: "ax", col: 0, color: "#ef4444" },
+        { label: "ay", col: 1, color: "#3b82f6" },
+        { label: "az", col: 2, color: "#22c55e" },
       ],
     },
     {
       label: "Velocity (mm/s)",
-      min: 0, max: 0.3,
+      min: 0, max: 5,
       channels: [
-        { label: "vx", col: 6,  color: "#4ade80", conv: function(v) { return v / 100; } },
-        { label: "vy", col: 7,  color: "#34d399", conv: function(v) { return v / 100; } },
-        { label: "vz", col: 8,  color: "#22d3ee", conv: function(v) { return v / 100; } },
+        { label: "vx", col: 3, color: "#f97316" },
+        { label: "vy", col: 4, color: "#a855f7" },
+        { label: "vz", col: 5, color: "#06b6d4" },
+      ],
+    },
+    {
+      label: "Temperature (°C)",
+      min: 0, max: 60,
+      channels: [
+        { label: "temp", col: 6, color: "#facc15" },
       ],
     },
   ];
@@ -52,7 +53,8 @@ function render(ctx, gfx) {
     for (var i = 0; i < csv.length; i++) {
       var row = csv[i];
       if (row && row.length > ch.col) {
-        out.push({ t: i, v: ch.conv(row[ch.col]) });
+        var v = parseFloat(row[ch.col]);
+        if (!isNaN(v)) { out.push({ t: i, v: v }); }
       }
     }
     return out;
