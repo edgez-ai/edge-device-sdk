@@ -475,6 +475,7 @@ end
 
 local function set_resolution()
 
+  drain_buffer(0.2)
   local packet = string.char(0x56, 0x00, 0x31, 0x05, 0x05, 0x01, 0x00, 0x19, 0x33)
   local ok, err = uart_reset_rx_cursor()
   if not ok then
