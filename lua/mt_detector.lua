@@ -2,7 +2,6 @@ local result = {}
 
 local SERIAL_NUM = 0x00
 
-local CMD_GET_VERSION = 0x11
 local CMD_RESET = 0x26
 local CMD_SET_DOWNSIZE = 0x31
 local CMD_FBUF_CTRL = 0x36
@@ -16,7 +15,6 @@ local READ_CHUNK_SIZE = 250
 local MAX_FRAME_SIZE = 500000
 
 local cam_baud = 921600
-local cam_action = "capture"
 local cam_output =  "capture.jpg"
 local cam_reset = false
 local cam_quiet =  false
@@ -27,10 +25,6 @@ local log_cfg = { quiet = cam_quiet }
 
 local function camera_log(msg)
   util_log(log_cfg, "VC0706", msg)
-end
-
-local function strip_trailing_nulls_and_newlines(s)
-  return tostring(s or ""):gsub("[%z\r\n]+$", "")
 end
 
 local function build_command(cmd, args)
@@ -116,38 +110,6 @@ local function verify_response(response, cmd)
     and string.byte(response, 2) == SERIAL_NUM
     and string.byte(response, 3) == (cmd & 0xFF)
     and string.byte(response, 4) == 0x00
-end
-
-local function get_version()
-  drain_buffer(0.1)
-
-  local ok, err = send_command(CMD_GET_VERSION, "", "GET_VERSION")
-  if not ok then
-    return false, err
-  end
-
-  local response = read_response(2.0, 256)
-  if #response >= 5 and verify_response(response, CMD_GET_VERSION) then
-    local version = strip_trailing_nulls_and_newlines(response:sub(6))
-    if version ~= "" then
-      print("Camera version: " .. version)
-      return true, version
-    end
-  end
-
-  local ascii = response:gsub("[^%g%s]", "")
-  if ascii:find("Version", 1, true) or ascii:find("PTC", 1, true) or ascii:find("VC0706", 1, true) then
-    ascii = strip_trailing_nulls_and_newlines(ascii)
-    print("Camera info (ASCII):\n" .. ascii)
-    return true, ascii
-  end
-
-  if #response > 0 then
-    print("Unknown response (hex): " .. util_bytes_to_hex(response))
-  else
-    print("No response from camera")
-  end
-  return false, "failed to read camera version"
 end
 
 local function stop_frame()
@@ -337,7 +299,6 @@ end
 
 uart_sleep(3.0)
 
-local success, message, extra
 if cam_reset then
   local reset_ok, reset_err = reset_camera()
   if not reset_ok then
@@ -346,51 +307,22 @@ if cam_reset then
   end
 end
 
-if cam_action == "version" then
-  local version_ok, version_or_err = get_version()
-  success = version_ok
-  message = version_or_err
-elseif cam_action == "set-resolution" then
-  local set_ok, set_err = set_resolution()
-  success = set_ok
-  message = set_ok and "resolution acknowledged" or set_err
-elseif cam_action == "capture" then
-  local set_ok, set_err = set_resolution()
-  if not set_ok then
-    uart_safe_close()
-    error("failed to set resolution before capture: " .. tostring(set_err))
-  end
-
-  local captured_len, cap_err = capture_image()
-  if not captured_len then
-    uart_safe_close()
-    error("capture failed: " .. tostring(cap_err))
-  end
-
-  success = true
-  message = "capture buffered"
-  extra = {
-    output = cam_output,
-    bytes = captured_len,
-    persist_buffer = true,
-  }
-else
+local set_ok, set_err = set_resolution()
+if not set_ok then
   uart_safe_close()
-  error("unsupported action: " .. tostring(cam_action))
+  error("failed to set resolution before capture: " .. tostring(set_err))
 end
+
+local captured_len, cap_err = capture_image()
+if not captured_len then
+  uart_safe_close()
+  error("capture failed: " .. tostring(cap_err))
+end
+
+result.output = cam_output
+result.bytes = captured_len
+result.persist_buffer = true
 
 uart_safe_close()
-if not success then
-  error(message)
-end
-
-table.insert(result, {
-  action = cam_action,
-  status = "ok",
-  message = tostring(message or "success"),
-  output = extra and extra.output or nil,
-  bytes = extra and extra.bytes or nil,
-  persist_buffer = extra and extra.persist_buffer or nil,
-})
 
 return result
