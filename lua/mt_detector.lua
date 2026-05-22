@@ -493,9 +493,9 @@ if not ok then
   error("failed to open rs485: " .. tostring(err))
 end
 
-uart_sleep(3.0)
-
+uart_sleep(1.5)
 ok, err = rs485_connect(cfg.baud)
+uart_sleep(1.5)
 if not ok then
   rs485_safe_close()
   error("failed to open rs485: " .. tostring(err))
