@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"log"
 	"net"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +17,7 @@ import (
 	"github.com/huin/goupnp/dcps/internetgateway1"
 	"github.com/huin/goupnp/dcps/internetgateway2"
 	libp2p "github.com/libp2p/go-libp2p"
+	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/event"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -78,6 +81,40 @@ func extractRelayAddrInfo(target multiaddr.Multiaddr) (*peer.AddrInfo, error) {
 		return nil, fmt.Errorf("failed to parse relay addr info: %w", err)
 	}
 	return relayInfo, nil
+}
+
+const identityPath = "libp2p_identity.key"
+
+func loadOrCreateIdentity(path string) (crypto.PrivKey, error) {
+	data, err := os.ReadFile(path)
+	if err == nil {
+		decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(data)))
+		if err != nil {
+			return nil, fmt.Errorf("invalid identity data: %w", err)
+		}
+		priv, err := crypto.UnmarshalPrivateKey(decoded)
+		if err != nil {
+			return nil, fmt.Errorf("failed to unmarshal private key: %w", err)
+		}
+		return priv, nil
+	}
+	if !os.IsNotExist(err) {
+		return nil, err
+	}
+
+	priv, _, err := crypto.GenerateEd25519Key(nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate identity: %w", err)
+	}
+	marshaled, err := crypto.MarshalPrivateKey(priv)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal private key: %w", err)
+	}
+	encoded := base64.StdEncoding.EncodeToString(marshaled)
+	if err := os.WriteFile(path, []byte(encoded), 0o600); err != nil {
+		return nil, fmt.Errorf("failed to write identity file: %w", err)
+	}
+	return priv, nil
 }
 
 func reserveOnRelay(ctx context.Context, h host.Host, relayInfo *peer.AddrInfo) {
@@ -300,8 +337,19 @@ func main() {
 		addrMu.Unlock()
 	}
 
+	privKey, err := loadOrCreateIdentity(identityPath)
+	if err != nil {
+		log.Fatalf("failed to load or create libp2p identity: %v", err)
+	}
+	peerID, err := peer.IDFromPrivateKey(privKey)
+	if err != nil {
+		log.Fatalf("failed to derive peer ID from identity: %v", err)
+	}
+	log.Printf("Using libp2p identity %s from %s", peerID.String(), identityPath)
+
 	// Create host with hole punching enabled for DCUtR
 	opts := []libp2p.Option{
+		libp2p.Identity(privKey),
 		libp2p.ListenAddrStrings(*listenFlag), // Need to listen for hole punching
 		libp2p.EnableRelay(),
 		libp2p.EnableHolePunching(), // Enable DCUtR hole punching
@@ -395,6 +443,9 @@ func main() {
 		go func() {
 			for evt := range sub.Out() {
 				idEvt := evt.(event.EvtPeerIdentificationCompleted)
+				if idEvt.Peer == info.ID {
+					printRemotePeerCandidates(h, info.ID, "[REMOTE] identify update")
+				}
 
 				// Ignore observed addresses from relayed-only connections
 				if isRelayedOnly(h, idEvt.Peer) {
@@ -459,6 +510,7 @@ func main() {
 	if err := h.Connect(connectCtx, *info); err != nil {
 		log.Fatalf("connect failed: %v", err)
 	}
+	printRemotePeerCandidates(h, info.ID, "[REMOTE] after connect")
 
 	// Show initial connection type
 	printConnections(h, info.ID)
@@ -469,12 +521,13 @@ func main() {
 	if err := runIdentify(identifyCtx, h, info.ID); err != nil {
 		log.Printf("identify failed: %v", err)
 	}
+	printRemotePeerCandidates(h, info.ID, "[REMOTE] after identify")
 
 	// Periodic ping to observe connection type changes (DCUtR upgrade)
-	fmt.Println("\n=== Starting periodic ping (10 times, 2s interval) ===")
+	fmt.Println("\n=== Starting periodic ping (20 times, 2s interval) ===")
 	pinger := ping.NewPingService(h)
 
-	for i := 1; i <= 10; i++ {
+	for i := 1; i <= 20; i++ {
 		pingCtx, pingCancel := context.WithTimeout(baseCtx, *timeoutFlag)
 		resCh := pinger.Ping(pingCtx, info.ID)
 
@@ -484,16 +537,16 @@ func main() {
 		select {
 		case res := <-resCh:
 			if res.Error != nil {
-				fmt.Printf("[%2d/10] %s | PING FAILED: %v\n", i, connType, res.Error)
+				fmt.Printf("[%2d/20] %s | PING FAILED: %v\n", i, connType, res.Error)
 			} else {
-				fmt.Printf("[%2d/10] %s | RTT: %s\n", i, connType, res.RTT)
+				fmt.Printf("[%2d/20] %s | RTT: %s\n", i, connType, res.RTT)
 			}
 		case <-pingCtx.Done():
-			fmt.Printf("[%2d/10] %s | TIMEOUT\n", i, connType)
+			fmt.Printf("[%2d/20] %s | TIMEOUT\n", i, connType)
 		}
 		pingCancel()
 
-		if i < 10 {
+		if i < 20 {
 			time.Sleep(2 * time.Second)
 		}
 	}
@@ -609,4 +662,41 @@ func runIdentify(ctx context.Context, h host.Host, peerID peer.ID) error {
 		fmt.Printf("  %s\n", p)
 	}
 	return nil
+}
+
+func printRemotePeerCandidates(h host.Host, peerID peer.ID, title string) {
+	if h == nil {
+		return
+	}
+	addrs := h.Peerstore().Addrs(peerID)
+	if title == "" {
+		title = "[REMOTE] candidates"
+	}
+	fmt.Printf("%s for %s: %d\n", title, peerID.String()[:12], len(addrs))
+	if len(addrs) == 0 {
+		fmt.Println("  (none)")
+		return
+	}
+
+	addrStrs := make([]string, 0, len(addrs))
+	for _, a := range addrs {
+		addrStrs = append(addrStrs, a.String())
+	}
+	sort.Strings(addrStrs)
+
+	for _, s := range addrStrs {
+		tags := []string{}
+		if strings.Contains(s, "p2p-circuit") {
+			tags = append(tags, "relay")
+		} else {
+			tags = append(tags, "direct")
+		}
+		if isPrivateAddr(s) {
+			tags = append(tags, "private")
+		}
+		if isLoopback(s) {
+			tags = append(tags, "loopback")
+		}
+		fmt.Printf("  - %s [%s]\n", s, strings.Join(tags, ","))
+	}
 }
