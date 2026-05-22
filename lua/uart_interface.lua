@@ -1,5 +1,6 @@
 local UART_OBJECT_ID = 10253
 local UART_RESOURCES = {
+  enabled = 1,
   open_state = 2,
   baudrate = 7,
   mode = 8,
@@ -210,7 +211,8 @@ function RestBackend:get_payload(res_id)
 end
 
 function RestBackend:configure(params)
-  local ok, err = self:put_text(UART_RESOURCES.open_state, "false")
+  local ok, err = nil, nil
+  ok, err = self:put_text(UART_RESOURCES.open_state, "false")
   if not ok then return false, err end
   busy_sleep(0.1)
 
@@ -241,6 +243,10 @@ end
 
 function RestBackend:close()
   return self:put_text(UART_RESOURCES.open_state, "false")
+end
+
+function RestBackend:set_enabled(enabled)
+  return self:put_text(UART_RESOURCES.enabled, enabled and "true" or "false")
 end
 
 function RestBackend:reset_rx_cursor()
@@ -400,6 +406,21 @@ function _G.uart_close()
   return backend:close()
 end
 
+function _G.uart_set_enabled(enabled)
+  local backend, err = ensure_backend()
+  if not backend then return false, err end
+
+  if active_backend_kind == "native-global" and type(backend.set_enabled) == "function" then
+    return backend.set_enabled(enabled)
+  end
+
+  if type(backend.set_enabled) == "function" then
+    return backend:set_enabled(enabled)
+  end
+
+  return true
+end
+
 function _G.uart_reset_rx_cursor()
   local backend, err = ensure_backend()
   if not backend then return false, err end
@@ -445,6 +466,9 @@ function _G.uart_connect(baud)
   if type(_G.uart_init) ~= "function" then
     return false, "global function uart_init is not defined"
   end
+  if type(_G.uart_set_enabled) ~= "function" then
+    return false, "global function uart_set_enabled is not defined"
+  end
   if type(_G.uart_open) ~= "function" then
     return false, "global function uart_open is not defined"
   end
@@ -454,6 +478,10 @@ function _G.uart_connect(baud)
 
   local ok, err = _G.uart_init(baud)
   if not ok then return false, err end
+
+  ok, err = _G.uart_set_enabled(true)
+  if not ok then return false, err end
+  busy_sleep(0.1)
 
   ok, err = _G.uart_open()
   if not ok then return false, err end
@@ -467,6 +495,9 @@ end
 function _G.uart_safe_close()
   if type(_G.uart_close) == "function" then
     _G.uart_close()
+  end
+  if type(_G.uart_set_enabled) == "function" then
+    _G.uart_set_enabled(false)
   end
 end
 

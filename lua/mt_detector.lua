@@ -15,7 +15,7 @@ local MAX_FRAME_SIZE = 500000
 
 local cam_baud = 921600
 local cam_output =  "capture.jpg"
-local cam_reset = false
+local cam_reset = true
 local cam_quiet =  false
 
 local log_cfg = { quiet = cam_quiet }
@@ -145,34 +145,44 @@ local function verify_response(response, cmd)
 end
 
 local function stop_frame()
+  camera_log("Stopping frame buffer")
   local ok, err = send_command(CMD_FBUF_CTRL, string.char(FBUF_STOP_FRAME))
   if not ok then
+    camera_log("Failed to send stop-frame command: " .. tostring(err))
     return false, err
   end
 
   local response = read_response(2.0, 64)
   if #response >= 5 and verify_response(response, CMD_FBUF_CTRL) then
+    camera_log("Frame buffer stopped")
     return true
   end
+  camera_log("Stop-frame response invalid, bytes=" .. tostring(#response))
   return #response > 0, "failed to stop frame"
 end
 
 local function resume_frame()
+  camera_log("Resuming frame buffer")
   local ok, err = send_command(CMD_FBUF_CTRL, string.char(FBUF_RESUME_FRAME))
   if not ok then
+    camera_log("Failed to send resume-frame command: " .. tostring(err))
     return false, err
   end
 
   local response = read_response(1.0, 64)
   if #response >= 5 and verify_response(response, CMD_FBUF_CTRL) then
+    camera_log("Frame buffer resumed")
     return true
   end
+  camera_log("Resume-frame response invalid, bytes=" .. tostring(#response))
   return #response > 0, "failed to resume frame"
 end
 
 local function get_frame_buffer_length()
+  camera_log("Requesting frame buffer length")
   local ok, err = send_command(CMD_GET_FBUF_LEN, string.char(0x00))
   if not ok then
+    camera_log("Failed to request frame buffer length: " .. tostring(err))
     return 0, err
   end
 
@@ -187,6 +197,7 @@ local function get_frame_buffer_length()
     return length
   end
 
+  camera_log("Invalid frame length response")
   return 0, "invalid frame length response"
 end
 
@@ -209,6 +220,8 @@ end
 local function read_frame_buffer_to_global(length, max_retries, sample_state)
   local total = tonumber(length) or 0
   local retries = tonumber(max_retries) or 3
+
+  camera_log(string.format("Starting frame read, total=%d bytes, retries=%d", total, retries))
 
   if total <= 0 or total > MAX_FRAME_SIZE then
     return nil, "invalid frame length: " .. tostring(total)
@@ -304,18 +317,23 @@ local function read_frame_buffer_to_global(length, max_retries, sample_state)
   end
 
   print("")
+  camera_log("Frame read complete")
   return true
 end
 
 local function reset_camera()
+  camera_log("Sending camera reset command")
   local ok, err = send_command(CMD_RESET, "")
   if not ok then
+    camera_log("Failed to send camera reset command: " .. tostring(err))
     return false, err
   end
   local response = read_response(3.0, 64)
   if #response >= 4 then
+    camera_log("Camera reset acknowledged")
     return true
   end
+  camera_log("No reset response from camera")
   return false, "no reset response"
 end
 
@@ -324,21 +342,26 @@ local function set_resolution()
 end
 
 local function stop_frame_and_get_length()
+  camera_log("Step: stop frame and get frame length")
   local ok, err = stop_frame()
   if not ok then
+    camera_log("Stop frame failed: " .. tostring(err))
     return nil, err
   end
 
   local frame_len = 0
-  for _ = 1, 3 do
+  for attempt = 1, 3 do
+    camera_log("Frame length attempt " .. tostring(attempt) .. "/3")
     drain_buffer(0.1)
     frame_len = get_frame_buffer_length()
     if frame_len > 0 then
+      camera_log("Frame length acquired: " .. tostring(frame_len) .. " bytes")
       break
     end
   end
 
   if frame_len <= 0 then
+    camera_log("Failed to get frame length after retries")
     return nil, "failed to get frame length"
   end
 
@@ -488,33 +511,42 @@ end
 
 
 -- Execute capture flow directly at script root.
+log("Step 1/11: connect camera UART at baud " .. tostring(cam_baud))
 local ok, err = uart_connect(cam_baud)
 if not ok then
+  log("Step 1 failed: camera UART connect error: " .. tostring(err))
   error("failed to open UART: " .. tostring(err))
 end
+log("Step 1 complete: camera UART connected")
 
-local rs_ok, rs_err = rs485_connect(cfg.baud)
-if not rs_ok then
-  uart_safe_close()
-  error("failed to open rs485: " .. tostring(rs_err))
-end
+log("Step 2/11: wait for camera warm-up")
 
-uart_sleep(3.0)
+
+uart_sleep(5.0)
+log("Step 2 complete: warm-up finished")
 if cam_reset then
+  log("Step 3/11: reset camera")
   local reset_ok, reset_err = reset_camera()
   if not reset_ok then
+    log("Step 3 failed: camera reset error: " .. tostring(reset_err))
     rs485_safe_close()
     uart_safe_close()
     error("camera reset failed: " .. tostring(reset_err))
   end
+  log("Step 3 complete: camera reset successful")
+else
+  log("Step 3/11: camera reset skipped")
 end
 
+log("Step 4/11: configure camera resolution")
 local set_ok, set_err = set_resolution()
 if not set_ok then
+  log("Step 4 failed: set resolution error: " .. tostring(set_err))
   rs485_safe_close()
   uart_safe_close()
   error("failed to set resolution before capture: " .. tostring(set_err))
 end
+log("Step 4 complete: camera resolution configured")
 
 local sample_state = {
   sums = {},
@@ -526,28 +558,46 @@ local sample_state = {
   csv_write_pos = 0,
 }
 
+log("Step 5/11: stop frame and query frame length")
 local frame_len, frame_len_err = stop_frame_and_get_length()
 if not frame_len then
+  log("Step 5 failed: " .. tostring(frame_len_err))
   resume_frame()
   rs485_safe_close()
   uart_safe_close()
   error("failed to stop frame and get length: " .. tostring(frame_len_err))
 end
+log("Step 5 complete: frame length=" .. tostring(frame_len) .. " bytes")
 
+log("Step 6/11: connect RS485 at baud " .. tostring(cfg.baud))
+local rs_ok, rs_err = rs485_connect(cfg.baud)
+if not rs_ok then
+  log("Step 6 failed: RS485 connect error: " .. tostring(rs_err))
+  uart_safe_close()
+  error("failed to open rs485: " .. tostring(rs_err))
+end
+log("Step 6 complete: RS485 connected")
+
+log("Step 7/11: verify global buffer helpers")
 if type(util_init_global_buffer) ~= "function" or type(util_write_global_buffer_at) ~= "function" then
+  log("Step 7 failed: global buffer helpers unavailable")
   resume_frame()
   rs485_safe_close()
   uart_safe_close()
   error("global buffer helpers are not available")
 end
+log("Step 7 complete: global buffer helpers available")
 
+log("Step 8/11: initialize global buffer")
 local init_ok, init_err = util_init_global_buffer()
 if not init_ok then
+  log("Step 8 failed: init global buffer error: " .. tostring(init_err))
   resume_frame()
   rs485_safe_close()
   uart_safe_close()
   error("failed to init global buffer: " .. tostring(init_err))
 end
+log("Step 8 complete: global buffer initialized")
 
 sample_state.sums = {}
 sample_state.counts = {}
@@ -557,22 +607,28 @@ sample_state.attempts = 0
 sample_state.max_attempts = SAMPLE_COUNT + 1
 
 -- Write CSV header marker before the image data in the global buffer.
+log("Step 9/11: write CSV marker at offset " .. tostring(frame_len))
 local marker_ok, marker_err = util_write_global_buffer_at(frame_len, CSV_START_MARKER)
 if not marker_ok then
+  log("Step 9 failed: write CSV marker error: " .. tostring(marker_err))
   resume_frame()
   rs485_safe_close()
   uart_safe_close()
   error("failed to write CSV marker before image read: " .. tostring(marker_err))
 end
 sample_state.csv_write_pos = frame_len + #CSV_START_MARKER
+log("Step 9 complete: CSV marker written")
 
+log("Step 10/11: read frame buffer and collect Modbus samples")
 local read_ok, read_err = read_frame_buffer_to_global(frame_len, 3, sample_state)
 resume_frame()
 if not read_ok then
+  log("Step 10 failed: frame read error: " .. tostring(read_err))
   rs485_safe_close()
   uart_safe_close()
   error("failed to read frame buffer: " .. tostring(read_err))
 end
+log("Step 10 complete: frame read and sampling finished")
 
 if type(util_write_global_buffer_at) ~= "function" then
   rs485_safe_close()
@@ -580,9 +636,11 @@ if type(util_write_global_buffer_at) ~= "function" then
   error("util_write_global_buffer_at is not available")
 end
 
+log("Step 11/11: compute averages and close interfaces")
 append_sample_averages(sample_state)
 
 rs485_safe_close()
 uart_safe_close()
+log("Capture flow complete")
 
 return result
