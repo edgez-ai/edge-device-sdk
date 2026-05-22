@@ -31,6 +31,20 @@ local FULL_BLOCK_END = 0x40
 local FULL_BLOCK_COUNT = FULL_BLOCK_END - FULL_BLOCK_START + 1
 local IMAGE_END_MARKER = "/r/n/r/n"
 
+local LWM2M_OBJECT = tonumber(rawget(_G, "VIBRATION_LWM2M_OBJECT")) or 3300
+local LWM2M_VALUE_RESOURCE = tonumber(rawget(_G, "VIBRATION_LWM2M_VALUE_RESOURCE")) or 5700
+local LWM2M_INSTANCE_BASE = tonumber(rawget(_G, "VIBRATION_INSTANCE_BASE")) or 0
+local TEMP_LWM2M_OBJECT = tonumber(rawget(_G, "VIBRATION_TEMP_LWM2M_OBJECT")) or 3303
+local TEMP_LWM2M_VALUE_RESOURCE = tonumber(rawget(_G, "VIBRATION_TEMP_LWM2M_VALUE_RESOURCE")) or 5700
+local TEMP_LWM2M_INSTANCE = tonumber(rawget(_G, "VIBRATION_TEMP_INSTANCE")) or 0
+
+local GROUPS = {
+  accel    = { address = 0x34, count = 3 },
+  velocity = { address = 0x3A, count = 3 },
+  temp     = { address = 0x40, count = 1 },
+}
+local OUTPUT_GROUPS = { "accel", "velocity", "temp" }
+
 local cam_baud = 921600
 local cam_output =  "capture.jpg"
 local cam_reset = false
@@ -43,6 +57,84 @@ local log_cfg = { quiet = cam_quiet }
 local function camera_log(msg)
   util_log(log_cfg, "VC0706", msg)
 end
+
+local function to_signed16(v)
+  if (v & 0x8000) ~= 0 then
+    return v - 0x10000
+  end
+  return v
+end
+
+local metric_instances = {}
+local next_instance = LWM2M_INSTANCE_BASE
+
+local function metric_instance(metric)
+  local id = metric_instances[metric]
+  if id == nil then
+    id = next_instance
+    metric_instances[metric] = id
+    next_instance = next_instance + 1
+  end
+  return id
+end
+
+local function add_lwm2m_metric(metric, value)
+  local instance = metric_instance(metric)
+  table.insert(result, {
+    object = LWM2M_OBJECT,
+    instance = instance,
+    resource = LWM2M_VALUE_RESOURCE,
+    value = value,
+  })
+end
+
+local function add_temp_lwm2m_metric(value)
+  table.insert(result, {
+    object = TEMP_LWM2M_OBJECT,
+    instance = TEMP_LWM2M_INSTANCE,
+    resource = TEMP_LWM2M_VALUE_RESOURCE,
+    value = value,
+  })
+end
+
+local function decode_group(name, regs)
+  if name == "accel" then
+    return {
+      ax_g = to_signed16(regs[1]) / 32768.0 * 16.0,
+      ay_g = to_signed16(regs[2]) / 32768.0 * 16.0,
+      az_g = to_signed16(regs[3]) / 32768.0 * 16.0,
+    }
+  elseif name == "velocity" then
+    return {
+      vx_mm_s = regs[1] / 100.0,
+      vy_mm_s = regs[2] / 100.0,
+      vz_mm_s = regs[3] / 100.0,
+    }
+  elseif name == "temp" then
+    return { temp_c = to_signed16(regs[1]) / 100.0 }
+  end
+  return {}
+end
+
+local function decode_full_block(block)
+  local merged = {}
+  for _, name in ipairs(OUTPUT_GROUPS) do
+    local g = GROUPS[name]
+    local offset = g.address - FULL_BLOCK_START
+    local regs = {}
+    for i = 1, g.count do
+      regs[i] = block[offset + i]
+    end
+    local values = decode_group(name, regs)
+    for k, v in pairs(values) do
+      merged[k] = v
+    end
+  end
+  return merged
+end
+
+local sums = {}
+local counts = {}
 
 local function build_command(cmd, args)
   args = args or ""
@@ -336,6 +428,13 @@ local function read_frame_buffer_to_global(length, max_retries)
         return nil, "failed to write sensor csv line at position " .. tostring(csv_write_pos) .. ": " .. tostring(write_csv_err)
       end
       csv_write_pos = csv_write_pos + #csv_line
+      local values = decode_full_block(regs)
+      for key, value in pairs(values) do
+        if type(value) == "number" then
+          sums[key] = (sums[key] or 0) + value
+          counts[key] = (counts[key] or 0) + 1
+        end
+      end
     end
 
     payload = nil
@@ -427,6 +526,18 @@ if not captured_len then
   uart_safe_close()
   rs485_safe_close()  
   error("capture failed: " .. tostring(cap_err))
+end
+
+local avg_keys = {}
+for key in pairs(sums) do avg_keys[#avg_keys + 1] = key end
+table.sort(avg_keys)
+for _, key in ipairs(avg_keys) do
+  local avg = sums[key] / counts[key]
+  if key == "temp_c" then
+    add_temp_lwm2m_metric(avg)
+  else
+    add_lwm2m_metric("avg." .. key, avg)
+  end
 end
 
 result.output = cam_output
