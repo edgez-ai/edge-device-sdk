@@ -112,17 +112,29 @@ local function verify_response(response, cmd)
     and string.byte(response, 4) == 0x00
 end
 
-local function stop_frame()
+local function stop_frame_and_get_length(max_attempts)
   local ok, err = send_command(CMD_FBUF_CTRL, string.char(FBUF_STOP_FRAME), "STOP_FRAME")
   if not ok then
-    return false, err
+    return nil, err
   end
 
   local response = read_response(2.0, 64)
-  if #response >= 5 and verify_response(response, CMD_FBUF_CTRL) then
-    return true
+  if not (#response >= 5 and verify_response(response, CMD_FBUF_CTRL)) then
+    return nil, "failed to stop frame"
   end
-  return #response > 0, "failed to stop frame"
+
+  local attempts = tonumber(max_attempts) or 3
+  local frame_len = 0
+  for _ = 1, attempts do
+    drain_buffer(0.1)
+    frame_len = get_frame_buffer_length()
+    if frame_len > 0 then
+      return frame_len
+    end
+  end
+
+  resume_frame()
+  return nil, "failed to get frame length"
 end
 
 local function resume_frame()
@@ -264,34 +276,22 @@ local function set_resolution()
 
 end
 
-local function capture_image()
-  local ok, err = stop_frame()
-  if not ok then
-    return nil, err
+local function capture_image(frame_len)
+  local total = tonumber(frame_len) or 0
+  if total <= 0 then
+    return nil, "invalid frame length"
   end
 
-  local frame_len = 0
-  for _ = 1, 3 do
-    drain_buffer(0.1)
-    frame_len = get_frame_buffer_length()
-    if frame_len > 0 then
-      break
-    end
-  end
-
-  if frame_len <= 0 then
-    resume_frame()
-    return nil, "failed to get frame length"
-  end
-
-  local ok, read_err = read_frame_buffer_to_global(frame_len, 3)
+  local ok, read_err = read_frame_buffer_to_global(total, 3)
   resume_frame()
   if not ok then
     return nil, read_err
   end
-  return frame_len
+  return total
 end
 
+
+-- Main execution starts here
 local ok, err = uart_connect(cam_baud)
 if not ok then
   error("failed to open rs485: " .. tostring(err))
@@ -313,7 +313,13 @@ if not set_ok then
   error("failed to set resolution before capture: " .. tostring(set_err))
 end
 
-local captured_len, cap_err = capture_image()
+local frame_len, frame_err = stop_frame_and_get_length(3)
+if not frame_len then
+  uart_safe_close()
+  error("capture failed: " .. tostring(frame_err))
+end
+
+local captured_len, cap_err = capture_image(frame_len)
 if not captured_len then
   uart_safe_close()
   error("capture failed: " .. tostring(cap_err))
