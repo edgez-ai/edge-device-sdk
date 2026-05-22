@@ -41,6 +41,7 @@ local TEMP_LWM2M_INSTANCE = tonumber(rawget(_G, "VIBRATION_TEMP_INSTANCE")) or 0
 local FULL_BLOCK_START = 0x34
 local FULL_BLOCK_END = 0x40
 local FULL_BLOCK_COUNT = FULL_BLOCK_END - FULL_BLOCK_START + 1
+local SAMPLE_HZ = tonumber(rawget(_G, "VIBRATION_SAMPLE_HZ")) or 10
 local SAMPLE_INTERVAL = 1.0 / SAMPLE_HZ
 local SAMPLE_COUNT = tonumber(rawget(_G, "VIBRATION_SAMPLE_COUNT")) or 100
 local RAW_OUTPUT = tostring(rawget(_G, "VIBRATION_RAW_OUTPUT") or "vibration_raw_samples.txt")
@@ -213,13 +214,8 @@ local function read_frame_buffer_to_global(length, max_retries, sample_state)
     return nil, "invalid frame length: " .. tostring(total)
   end
 
-  if type(util_init_global_buffer) ~= "function" or type(util_write_global_buffer_at) ~= "function" then
-    return nil, "util global buffer write helpers are not available"
-  end
-
-  local init_ok, init_err = util_init_global_buffer()
-  if not init_ok then
-    return nil, "failed to init global buffer: " .. tostring(init_err)
+  if type(util_write_global_buffer_at) ~= "function" then
+    return nil, "util global buffer write helper is not available"
   end
 
   local offset = 0
@@ -530,44 +526,52 @@ local sample_state = {
   csv_write_pos = 0,
 }
 
-
-for attempt = 1, 3 do
-  local frame_len, frame_len_err = stop_frame_and_get_length()
-  if frame_len then
-    sample_state.sums = {}
-    sample_state.counts = {}
-    sample_state.first_record_skipped = false
-    sample_state.valid_sample_index = 0
-    sample_state.attempts = 0
-    sample_state.max_attempts = SAMPLE_COUNT + 1
-
-    -- Write CSV header marker before the image data in the global buffe
-    local marker_ok, marker_err = util_write_global_buffer_at(frame_len, CSV_START_MARKER)
-    if not marker_ok then
-      cap_err = "failed to write CSV marker before image read: " .. tostring(marker_err)
-      resume_frame()
-      break
-    end
-    sample_state.csv_write_pos = frame_len + #CSV_START_MARKER
-  else
-    cap_err = frame_len_err
-    resume_frame()
-  end
-
-  camera_log(string.format("capture retry %d/3 failed: %s", attempt, tostring(cap_err)))
-  if attempt < 3 then
-    uart_sleep(1.0)
-  else
-    rs485_safe_close()
-    uart_safe_close()
-    error("capture failed after 3 attempts: " .. tostring(cap_err))
-  end
+local frame_len, frame_len_err = stop_frame_and_get_length()
+if not frame_len then
+  resume_frame()
+  rs485_safe_close()
+  uart_safe_close()
+  error("failed to stop frame and get length: " .. tostring(frame_len_err))
 end
+
+if type(util_init_global_buffer) ~= "function" or type(util_write_global_buffer_at) ~= "function" then
+  resume_frame()
+  rs485_safe_close()
+  uart_safe_close()
+  error("global buffer helpers are not available")
+end
+
+local init_ok, init_err = util_init_global_buffer()
+if not init_ok then
+  resume_frame()
+  rs485_safe_close()
+  uart_safe_close()
+  error("failed to init global buffer: " .. tostring(init_err))
+end
+
+sample_state.sums = {}
+sample_state.counts = {}
+sample_state.first_record_skipped = false
+sample_state.valid_sample_index = 0
+sample_state.attempts = 0
+sample_state.max_attempts = SAMPLE_COUNT + 1
+
+-- Write CSV header marker before the image data in the global buffer.
+local marker_ok, marker_err = util_write_global_buffer_at(frame_len, CSV_START_MARKER)
+if not marker_ok then
+  resume_frame()
+  rs485_safe_close()
+  uart_safe_close()
+  error("failed to write CSV marker before image read: " .. tostring(marker_err))
+end
+sample_state.csv_write_pos = frame_len + #CSV_START_MARKER
 
 local read_ok, read_err = read_frame_buffer_to_global(frame_len, 3, sample_state)
 resume_frame()
-if read_ok then
-  break
+if not read_ok then
+  rs485_safe_close()
+  uart_safe_close()
+  error("failed to read frame buffer: " .. tostring(read_err))
 end
 
 if type(util_write_global_buffer_at) ~= "function" then

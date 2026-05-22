@@ -180,18 +180,48 @@ end
 
 local util_global_buffer = { chunks = {}, size = 0 }
 
+local native_util_init_global_buffer = _G.util_init_global_buffer
+local native_util_append_global_buffer = _G.util_append_global_buffer
+local native_util_write_global_buffer_at = _G.util_write_global_buffer_at
+
+local function util_global_buffer_data()
+  return table.concat(util_global_buffer.chunks)
+end
+
+local function util_set_global_buffer_data(data)
+  local s = tostring(data or "")
+  util_global_buffer = {
+    chunks = (s ~= "") and { s } or {},
+    size = #s,
+  }
+end
+
 local function util_init_global_buffer()
+  if type(native_util_init_global_buffer) == "function" then
+    local ok, err = native_util_init_global_buffer()
+    if not ok then
+      return false, err
+    end
+  end
+
   util_global_buffer = { chunks = {}, size = 0 }
   return true
 end
 
 local function util_append_global_buffer(data)
-  local buf = util_global_buffer
-
   local chunk = data
   if type(chunk) ~= "string" then
     chunk = tostring(chunk or "")
   end
+
+  if type(native_util_append_global_buffer) == "function" then
+    local ok, err = native_util_append_global_buffer(chunk)
+    if not ok then
+      return false, err
+    end
+  end
+
+  local buf = util_global_buffer
 
   if #chunk > 0 then
     buf.chunks[#buf.chunks + 1] = chunk
@@ -201,8 +231,42 @@ local function util_append_global_buffer(data)
   return buf.size
 end
 
+local function util_write_global_buffer_at(position, data)
+  local pos = tonumber(position)
+  if not pos or pos < 0 or pos ~= math.floor(pos) then
+    return false, "invalid position"
+  end
+
+  local chunk = data
+  if type(chunk) ~= "string" then
+    chunk = tostring(chunk or "")
+  end
+
+  if type(native_util_write_global_buffer_at) == "function" then
+    local ok, err = native_util_write_global_buffer_at(pos, chunk)
+    if not ok then
+      return false, err
+    end
+  end
+
+  local current = util_global_buffer_data()
+  local current_len = #current
+
+  if pos > current_len then
+    current = current .. string.rep("\0", pos - current_len)
+    current_len = #current
+  end
+
+  local prefix = (pos > 0) and current:sub(1, pos) or ""
+  local suffix_start = pos + #chunk + 1
+  local suffix = (suffix_start <= current_len) and current:sub(suffix_start) or ""
+  util_set_global_buffer_data(prefix .. chunk .. suffix)
+
+  return true
+end
+
 local function util_get_global_buffer(clear_after_read)
-  local data = table.concat(util_global_buffer.chunks)
+  local data = util_global_buffer_data()
   if clear_after_read then
     util_global_buffer = { chunks = {}, size = 0 }
   end
@@ -237,6 +301,7 @@ _G.min_of_day = util_get_min_of_day
 _G.util_sleep = util_sleep
 _G.util_init_global_buffer = util_init_global_buffer
 _G.util_append_global_buffer = util_append_global_buffer
+_G.util_write_global_buffer_at = util_write_global_buffer_at
 _G.util_get_global_buffer = util_get_global_buffer
 _G.util_global_buffer_size = util_global_buffer_size
 _G.util_clear_global_buffer = util_clear_global_buffer
@@ -261,6 +326,7 @@ return {
   sleep = util_sleep,
   init_global_buffer = util_init_global_buffer,
   append_global_buffer = util_append_global_buffer,
+  write_global_buffer_at = util_write_global_buffer_at,
   get_global_buffer = util_get_global_buffer,
   global_buffer_size = util_global_buffer_size,
   clear_global_buffer = util_clear_global_buffer,
