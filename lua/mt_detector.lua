@@ -519,10 +519,6 @@ local function append_csv_start_marker()
 end
 
 local function run_full_block_average()
-  local block, err = read_holding_registers(FULL_BLOCK_START, FULL_BLOCK_COUNT)
-  if not block then
-    error("full-block read failed: " .. tostring(err))
-  end
   local sums = {}
   local counts = {}
   local function add_sample(sample_index, regs)
@@ -531,27 +527,27 @@ local function run_full_block_average()
       error("failed to append sample " .. tostring(sample_index) .. " to global buffer: " .. tostring(append_err))
     end
   end
-  local first_values = decode_full_block(block)
-  add_sample(1, block)
-  for key, value in pairs(first_values) do
-    if type(value) == "number" then
-      sums[key] = (sums[key] or 0) + value
-      counts[key] = (counts[key] or 0) + 1
-    end
-  end
-  for sample = 2, SAMPLE_COUNT do
+  local first_record_skipped = false
+  local valid_sample_index = 0
+  for sample = 1, SAMPLE_COUNT + 1 do
     local cycle_start = os.clock()
     local regs, read_err = read_holding_registers(FULL_BLOCK_START, FULL_BLOCK_COUNT)
-    if not regs then
-      error("full-block read failed at sample " .. tostring(sample) .. ": " .. tostring(read_err))
-    end
-    local values = decode_full_block(regs)
-    add_sample(sample, regs)
-    for key, value in pairs(values) do
-      if type(value) == "number" then
-        sums[key] = (sums[key] or 0) + value
-        counts[key] = (counts[key] or 0) + 1
+    if regs then
+      if not first_record_skipped then
+        first_record_skipped = true
+      else
+        valid_sample_index = valid_sample_index + 1
+        local values = decode_full_block(regs)
+        add_sample(valid_sample_index, regs)
+        for key, value in pairs(values) do
+          if type(value) == "number" then
+            sums[key] = (sums[key] or 0) + value
+            counts[key] = (counts[key] or 0) + 1
+          end
+        end
       end
+    else
+      log("Skipping failed full-block read at sample " .. tostring(sample) .. ": " .. tostring(read_err))
     end
 
     local elapsed = os.clock() - cycle_start
@@ -559,6 +555,10 @@ local function run_full_block_average()
     if sleep_time > 0 then
       sleep_seconds(sleep_time)
     end
+  end
+  if valid_sample_index == 0 then
+    log("No valid full-block samples collected after skipping the first record")
+    return
   end
   local keys = {}
   for key in pairs(sums) do
