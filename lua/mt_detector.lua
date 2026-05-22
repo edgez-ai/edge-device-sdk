@@ -10,7 +10,7 @@ local CMD_READ_FBUF = 0x32
 local FBUF_STOP_FRAME = 0x00
 local FBUF_RESUME_FRAME = 0x02
 
-local READ_CHUNK_SIZE = 256
+local READ_CHUNK_SIZE = 255
 local MAX_FRAME_SIZE = 500000
 
 local cam_baud = 921600
@@ -41,7 +41,6 @@ local TEMP_LWM2M_INSTANCE = tonumber(rawget(_G, "VIBRATION_TEMP_INSTANCE")) or 0
 local FULL_BLOCK_START = 0x34
 local FULL_BLOCK_END = 0x40
 local FULL_BLOCK_COUNT = FULL_BLOCK_END - FULL_BLOCK_START + 1
-local SAMPLE_HZ = 10
 local SAMPLE_INTERVAL = 1.0 / SAMPLE_HZ
 local SAMPLE_COUNT = tonumber(rawget(_G, "VIBRATION_SAMPLE_COUNT")) or 100
 local RAW_OUTPUT = tostring(rawget(_G, "VIBRATION_RAW_OUTPUT") or "vibration_raw_samples.txt")
@@ -206,7 +205,7 @@ local function build_read_fbuf_args(offset, chunk_size)
   )
 end
 
-local function read_frame_buffer_to_global(length, max_retries)
+local function read_frame_buffer_to_global(length, max_retries, sample_state)
   local total = tonumber(length) or 0
   local retries = tonumber(max_retries) or 3
 
@@ -214,8 +213,8 @@ local function read_frame_buffer_to_global(length, max_retries)
     return nil, "invalid frame length: " .. tostring(total)
   end
 
-  if type(util_init_global_buffer) ~= "function" or type(util_append_global_buffer) ~= "function" then
-    return nil, "util global buffer helpers are not available"
+  if type(util_init_global_buffer) ~= "function" or type(util_write_global_buffer_at) ~= "function" then
+    return nil, "util global buffer write helpers are not available"
   end
 
   local init_ok, init_err = util_init_global_buffer()
@@ -255,10 +254,44 @@ local function read_frame_buffer_to_global(length, max_retries)
       return nil, "chunk too short at offset " .. tostring(offset)
     end
 
+    if sample_state.attempts < sample_state.max_attempts then
+      sample_state.attempts = sample_state.attempts + 1
+
+      local regs, read_err = read_holding_registers(FULL_BLOCK_START, FULL_BLOCK_COUNT)
+      if not regs then
+        log("Skipping failed full-block read at sample " .. tostring(sample_state.attempts) .. ": " .. tostring(read_err))
+      else
+        if not sample_state.first_record_skipped then
+          sample_state.first_record_skipped = true
+        else
+          sample_state.valid_sample_index = sample_state.valid_sample_index + 1
+
+          local parts = {}
+          for i, reg in ipairs(regs) do
+            parts[#parts + 1] = tostring(reg)
+          end
+          local line = table.concat(parts, ",") .. "\n"
+          local line_ok, line_err = util_write_global_buffer_at(sample_state.csv_write_pos, line)
+          if not line_ok then
+            return nil, "failed to write CSV line: " .. tostring(line_err)
+          end
+          sample_state.csv_write_pos = sample_state.csv_write_pos + #line
+
+          local values = decode_full_block(regs)
+          for key, value in pairs(values) do
+            if type(value) == "number" then
+              sample_state.sums[key] = (sample_state.sums[key] or 0) + value
+              sample_state.counts[key] = (sample_state.counts[key] or 0) + 1
+            end
+          end
+        end
+      end
+    end
+
     local payload = response:sub(payload_start, payload_end)
-    local append_ok, append_err = util_append_global_buffer(payload)
-    if not append_ok then
-      return nil, "failed to append payload at offset " .. tostring(offset) .. ": " .. tostring(append_err)
+    local write_ok, write_err = util_write_global_buffer_at(offset, payload)
+    if not write_ok then
+      return nil, "failed to write payload at offset " .. tostring(offset) .. ": " .. tostring(write_err)
     end
 
     payload = nil
@@ -294,7 +327,7 @@ local function set_resolution()
   return true
 end
 
-local function capture_image()
+local function stop_frame_and_get_length()
   local ok, err = stop_frame()
   if not ok then
     return nil, err
@@ -310,68 +343,11 @@ local function capture_image()
   end
 
   if frame_len <= 0 then
-    resume_frame()
     return nil, "failed to get frame length"
   end
 
-  local ok, read_err = read_frame_buffer_to_global(frame_len, 3)
-  resume_frame()
-  if not ok then
-    return nil, read_err
-  end
-  return frame_len, "image captured successfully"
+  return frame_len
 end
-
-local function run_action()
-  local ok, err = uart_connect(cam_baud)
-  if not ok then
-    return false, "failed to open rs485: " .. tostring(err)
-  end
-
-  uart_sleep(3.0)
-  if cam_reset then
-    local reset_ok, reset_err = reset_camera()
-    if not reset_ok then
-      uart_safe_close()
-      return false, "camera reset failed: " .. tostring(reset_err)
-    end
-  end
-
-  local set_ok, set_err = set_resolution()
-  if not set_ok then
-    uart_safe_close()
-    return false, "failed to set resolution before capture: " .. tostring(set_err)
-  end
-
-  local captured_len, cap_err = capture_image()
-  if not captured_len then
-    uart_safe_close()
-    return false, "capture failed: " .. tostring(cap_err)
-  end
-
-  local extra = {
-    output = cam_output,
-    bytes = captured_len,
-    persist_buffer = true,
-  }
-
-  uart_safe_close()
-  return true, "capture buffered", extra
-end
-
-local ok, message, extra = run_action()
-if not ok then
-  error(message)
-end
-
-table.insert(result, {
-  action = "capture",
-  status = "ok",
-  message = tostring(message or "success"),
-  output = extra and extra.output or nil,
-  bytes = extra and extra.bytes or nil,
-  persist_buffer = extra and extra.persist_buffer or nil,
-})
 
 local function log(msg)
   util_log({ quiet = cfg.quiet }, "Vibration", msg)
@@ -491,113 +467,118 @@ local function decode_full_block(block)
   end
   return merged_values
 end
-local function append_raw_sample_to_global_buffer(_, regs)
-  if type(util_append_global_buffer) ~= "function" then
-    return nil, "util global buffer append helper is not available"
-  end
-  local parts = {}
-  for i, reg in ipairs(regs) do
-    parts[#parts + 1] = tostring(reg)
-  end
-  local line = table.concat(parts, ",") .. "\n"
-  local ok, err = util_append_global_buffer(line)
-  if not ok then
-    return nil, err
-  end
-  return true
-end
 
-local function append_csv_start_marker()
-  if type(util_append_global_buffer) ~= "function" then
-    return nil, "util global buffer append helper is not available"
-  end
-  local ok, err = util_append_global_buffer(CSV_START_MARKER)
-  if not ok then
-    return nil, err
-  end
-  return true
-end
-
-local function run_full_block_average()
-  local sums = {}
-  local counts = {}
-  local function add_sample(sample_index, regs)
-    local ok, append_err = append_raw_sample_to_global_buffer(sample_index, regs)
-    if not ok then
-      error("failed to append sample " .. tostring(sample_index) .. " to global buffer: " .. tostring(append_err))
-    end
-  end
-  local first_record_skipped = false
-  local valid_sample_index = 0
-  for sample = 1, SAMPLE_COUNT + 1 do
-    local cycle_start = os.clock()
-    local regs, read_err = read_holding_registers(FULL_BLOCK_START, FULL_BLOCK_COUNT)
-    if regs then
-      if not first_record_skipped then
-        first_record_skipped = true
-      else
-        valid_sample_index = valid_sample_index + 1
-        local values = decode_full_block(regs)
-        add_sample(valid_sample_index, regs)
-        for key, value in pairs(values) do
-          if type(value) == "number" then
-            sums[key] = (sums[key] or 0) + value
-            counts[key] = (counts[key] or 0) + 1
-          end
-        end
-      end
-    else
-      log("Skipping failed full-block read at sample " .. tostring(sample) .. ": " .. tostring(read_err))
-    end
-
-    local elapsed = os.clock() - cycle_start
-    local sleep_time = SAMPLE_INTERVAL - elapsed
-    if sleep_time > 0 then
-      sleep_seconds(sleep_time)
-    end
-  end
-  if valid_sample_index == 0 then
-    log("No valid full-block samples collected after skipping the first record")
+local function append_sample_averages(sample_state)
+  if sample_state.valid_sample_index == 0 then
+    log("No valid full-block samples collected while reading image frame")
     return
   end
+
   local keys = {}
-  for key in pairs(sums) do
+  for key in pairs(sample_state.sums) do
     keys[#keys + 1] = key
   end
   table.sort(keys)
+
   for _, key in ipairs(keys) do
-    local avg = sums[key] / counts[key]
+    local avg = sample_state.sums[key] / sample_state.counts[key]
     if key == "temp_c" then
       add_temp_lwm2m_metric(avg)
     else
       add_lwm2m_metric("avg." .. key, avg)
     end
   end
-
-  local buffered_bytes = nil
-  if type(util_global_buffer_size) == "function" then
-    buffered_bytes = util_global_buffer_size()
-  end
-  table.insert(result, {
-    action = "full-block-average",
-    status = "ok",
-    message = "raw samples buffered",
-    output = RAW_OUTPUT,
-    bytes = buffered_bytes,
-    persist_buffer = true,
-  })
 end
 
-local marker_ok, marker_err = append_csv_start_marker()
-if not marker_ok then
-  error("failed to append CSV marker to global buffer: " .. tostring(marker_err))
-end
 
-local ok, err = rs485_connect(cfg.baud)
+-- Execute capture flow directly at script root.
+local ok, err = uart_connect(cam_baud)
 if not ok then
-  rs485_safe_close()
-  error("failed to open rs485: " .. tostring(err))
+  error("failed to open UART: " .. tostring(err))
 end
-run_full_block_average()
+
+local rs_ok, rs_err = rs485_connect(cfg.baud)
+if not rs_ok then
+  uart_safe_close()
+  error("failed to open rs485: " .. tostring(rs_err))
+end
+
+uart_sleep(3.0)
+if cam_reset then
+  local reset_ok, reset_err = reset_camera()
+  if not reset_ok then
+    rs485_safe_close()
+    uart_safe_close()
+    error("camera reset failed: " .. tostring(reset_err))
+  end
+end
+
+local set_ok, set_err = set_resolution()
+if not set_ok then
+  rs485_safe_close()
+  uart_safe_close()
+  error("failed to set resolution before capture: " .. tostring(set_err))
+end
+
+local sample_state = {
+  sums = {},
+  counts = {},
+  first_record_skipped = false,
+  valid_sample_index = 0,
+  attempts = 0,
+  max_attempts = SAMPLE_COUNT + 1,
+  csv_write_pos = 0,
+}
+
+
+for attempt = 1, 3 do
+  local frame_len, frame_len_err = stop_frame_and_get_length()
+  if frame_len then
+    sample_state.sums = {}
+    sample_state.counts = {}
+    sample_state.first_record_skipped = false
+    sample_state.valid_sample_index = 0
+    sample_state.attempts = 0
+    sample_state.max_attempts = SAMPLE_COUNT + 1
+
+    -- Write CSV header marker before the image data in the global buffe
+    local marker_ok, marker_err = util_write_global_buffer_at(frame_len, CSV_START_MARKER)
+    if not marker_ok then
+      cap_err = "failed to write CSV marker before image read: " .. tostring(marker_err)
+      resume_frame()
+      break
+    end
+    sample_state.csv_write_pos = frame_len + #CSV_START_MARKER
+  else
+    cap_err = frame_len_err
+    resume_frame()
+  end
+
+  camera_log(string.format("capture retry %d/3 failed: %s", attempt, tostring(cap_err)))
+  if attempt < 3 then
+    uart_sleep(1.0)
+  else
+    rs485_safe_close()
+    uart_safe_close()
+    error("capture failed after 3 attempts: " .. tostring(cap_err))
+  end
+end
+
+local read_ok, read_err = read_frame_buffer_to_global(frame_len, 3, sample_state)
+resume_frame()
+if read_ok then
+  break
+end
+
+if type(util_write_global_buffer_at) ~= "function" then
+  rs485_safe_close()
+  uart_safe_close()
+  error("util_write_global_buffer_at is not available")
+end
+
+append_sample_averages(sample_state)
+
 rs485_safe_close()
+uart_safe_close()
+
 return result
