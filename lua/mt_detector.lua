@@ -40,10 +40,12 @@ local TEMP_LWM2M_VALUE_RESOURCE = tonumber(rawget(_G, "VIBRATION_TEMP_LWM2M_VALU
 local TEMP_LWM2M_INSTANCE = tonumber(rawget(_G, "VIBRATION_TEMP_INSTANCE")) or 0
 local FULL_BLOCK_START = 0x34
 local FULL_BLOCK_END = 0x9A
-local FULL_BLOCK_COUNT = FULL_BLOCK_END - FULL_BLOCK_START + 1
+local FULL_BLOCK_COUNT = 0x40 - FULL_BLOCK_START + 1
+local FULL_BLOCK_READ_RETRIES = 3
+local FULL_BLOCK_RETRY_DELAY_SECONDS = 0.5
 local SAMPLE_HZ = 5
 local SAMPLE_INTERVAL = 1.0 / SAMPLE_HZ
-local SAMPLE_COUNT = tonumber(rawget(_G, "VIBRATION_SAMPLE_COUNT")) or 100
+local SAMPLE_COUNT = tonumber(rawget(_G, "VIBRATION_SAMPLE_COUNT")) or 200
 local RAW_OUTPUT = tostring(rawget(_G, "VIBRATION_RAW_OUTPUT") or "vibration_raw_samples.txt")
 local CSV_START_MARKER = "\r\n\r\n\r\n\r\n"
 local GROUPS = {
@@ -322,57 +324,6 @@ local function capture_image()
   return frame_len, "image captured successfully"
 end
 
-local function run_action()
-  local ok, err = uart_connect(cam_baud)
-  if not ok then
-    return false, "failed to open rs485: " .. tostring(err)
-  end
-
-  uart_sleep(3.0)
-  if cam_reset then
-    local reset_ok, reset_err = reset_camera()
-    if not reset_ok then
-      uart_safe_close()
-      return false, "camera reset failed: " .. tostring(reset_err)
-    end
-  end
-
-  local set_ok, set_err = set_resolution()
-  if not set_ok then
-    uart_safe_close()
-    return false, "failed to set resolution before capture: " .. tostring(set_err)
-  end
-
-  local captured_len, cap_err = capture_image()
-  if not captured_len then
-    uart_safe_close()
-    return false, "capture failed: " .. tostring(cap_err)
-  end
-
-  local extra = {
-    output = cam_output,
-    bytes = captured_len,
-    persist_buffer = true,
-  }
-
-  uart_safe_close()
-  return true, "capture buffered", extra
-end
-
-local ok, message, extra = run_action()
-if not ok then
-  error(message)
-end
-
-table.insert(result, {
-  action = "capture",
-  status = "ok",
-  message = tostring(message or "success"),
-  output = extra and extra.output or nil,
-  bytes = extra and extra.bytes or nil,
-  persist_buffer = extra and extra.persist_buffer or nil,
-})
-
 local function log(msg)
   util_log({ quiet = cfg.quiet }, "Vibration", msg)
 end
@@ -491,18 +442,24 @@ local function decode_full_block(block)
   end
   return merged_values
 end
-local function append_raw_sample_to_global_buffer(_, regs)
-  if type(util_append_global_buffer) ~= "function" then
-    return nil, "util global buffer append helper is not available"
-  end
+
+local function build_raw_sample_csv_line(regs)
   local parts = {}
   for i, reg in ipairs(regs) do
     parts[#parts + 1] = tostring(reg)
   end
-  local line = table.concat(parts, ",") .. "\n"
-  local ok, err = util_append_global_buffer(line)
-  if not ok then
-    return nil, err
+  return table.concat(parts, ",") .. "\n"
+end
+
+local function append_raw_sample_lines_to_global_buffer(sample_lines)
+  if type(util_append_global_buffer) ~= "function" then
+    return nil, "util global buffer append helper is not available"
+  end
+  for i, line in ipairs(sample_lines) do
+    local ok, err = util_append_global_buffer(line)
+    if not ok then
+      return nil, "failed to append sample " .. tostring(i) .. " to global buffer: " .. tostring(err)
+    end
   end
   return true
 end
@@ -519,45 +476,49 @@ local function append_csv_start_marker()
 end
 
 local function run_full_block_average()
-  local block, err = read_holding_registers(FULL_BLOCK_START, FULL_BLOCK_COUNT)
+  local function read_full_block_with_retry(context)
+    local last_err = nil
+    for attempt = 1, FULL_BLOCK_READ_RETRIES do
+      local regs, err = read_holding_registers(FULL_BLOCK_START, FULL_BLOCK_COUNT)
+      if regs then
+        return regs
+      end
+      last_err = err
+      if attempt < FULL_BLOCK_READ_RETRIES then
+        sleep_seconds(FULL_BLOCK_RETRY_DELAY_SECONDS)
+      end
+    end
+    return nil, tostring(context) .. " failed after " .. tostring(FULL_BLOCK_READ_RETRIES) .. " retries: " .. tostring(last_err)
+  end
+
+  local block, err = read_full_block_with_retry("full-block read")
   if not block then
-    error("full-block read failed: " .. tostring(err))
+    return nil, err
   end
   local sums = {}
   local counts = {}
+  local sample_lines = {}
+
   local function add_sample(sample_index, regs)
-    local ok, append_err = append_raw_sample_to_global_buffer(sample_index, regs)
-    if not ok then
-      error("failed to append sample " .. tostring(sample_index) .. " to global buffer: " .. tostring(append_err))
-    end
+    sample_lines[#sample_lines + 1] = build_raw_sample_csv_line(regs)
+    return true
   end
-  local first_values = decode_full_block(block)
-  add_sample(1, block)
-  for key, value in pairs(first_values) do
-    if type(value) == "number" then
-      sums[key] = (sums[key] or 0) + value
-      counts[key] = (counts[key] or 0) + 1
-    end
-  end
-  for sample = 2, SAMPLE_COUNT do
-    local cycle_start = os.clock()
-    local regs, read_err = read_holding_registers(FULL_BLOCK_START, FULL_BLOCK_COUNT)
+  -- Discard the first read as warm-up; start buffering/averaging from the next sample.
+  for sample = 2, SAMPLE_COUNT + 1 do
+    local regs, read_err = read_full_block_with_retry("full-block read at sample " .. tostring(sample))
     if not regs then
-      error("full-block read failed at sample " .. tostring(sample) .. ": " .. tostring(read_err))
+      return nil, read_err
     end
     local values = decode_full_block(regs)
-    add_sample(sample, regs)
+    local append_ok, append_err = add_sample(sample, regs)
+    if not append_ok then
+      return nil, append_err
+    end
     for key, value in pairs(values) do
       if type(value) == "number" then
         sums[key] = (sums[key] or 0) + value
         counts[key] = (counts[key] or 0) + 1
       end
-    end
-
-    local elapsed = os.clock() - cycle_start
-    local sleep_time = SAMPLE_INTERVAL - elapsed
-    if sleep_time > 0 then
-      sleep_seconds(sleep_time)
     end
   end
   local keys = {}
@@ -574,30 +535,77 @@ local function run_full_block_average()
     end
   end
 
-  local buffered_bytes = nil
-  if type(util_global_buffer_size) == "function" then
-    buffered_bytes = util_global_buffer_size()
+  return {
+    sample_lines = sample_lines,
+  }
+end
+
+local function run_action()
+  local function close_interfaces()
+    uart_safe_close()
+    rs485_safe_close()
   end
-  table.insert(result, {
-    action = "full-block-average",
-    status = "ok",
-    message = "raw samples buffered",
-    output = RAW_OUTPUT,
-    bytes = buffered_bytes,
+
+  local function fail(msg)
+    close_interfaces()
+    return false, msg
+  end
+
+  local ok, err = rs485_connect(cfg.baud)
+  if not ok then
+    return fail("failed to open rs485: " .. tostring(err))
+  end
+
+  ok, err = uart_connect(cam_baud)
+  if not ok then
+    return fail("failed to open uart: " .. tostring(err))
+  end
+
+  local sampling_data, sample_err = run_full_block_average()
+  if not sampling_data then
+    return fail(tostring(sample_err))
+  end
+
+  if cam_reset then
+    local reset_ok, reset_err = reset_camera()
+    if not reset_ok then
+      return fail("camera reset failed: " .. tostring(reset_err))
+    end
+  end
+
+  local set_ok, set_err = set_resolution()
+  if not set_ok then
+    return fail("failed to set resolution before capture: " .. tostring(set_err))
+  end
+
+  local captured_len, cap_err = capture_image()
+  if not captured_len then
+    return fail("capture failed: " .. tostring(cap_err))
+  end
+
+  local marker_ok, marker_err = append_csv_start_marker()
+  if not marker_ok then
+    return fail("failed to append CSV marker to global buffer: " .. tostring(marker_err))
+  end
+
+  local append_ok, append_err = append_raw_sample_lines_to_global_buffer(sampling_data.sample_lines)
+  if not append_ok then
+    return fail(tostring(append_err))
+  end
+
+  local extra = {
+    output = cam_output,
+    bytes = captured_len,
     persist_buffer = true,
-  })
+  }
+
+  close_interfaces()
+  return true, "capture buffered", extra
 end
 
-local marker_ok, marker_err = append_csv_start_marker()
-if not marker_ok then
-  error("failed to append CSV marker to global buffer: " .. tostring(marker_err))
-end
-
-local ok, err = rs485_connect(cfg.baud)
+local ok, message, extra = run_action()
 if not ok then
-  rs485_safe_close()
-  error("failed to open rs485: " .. tostring(err))
+  error(message)
 end
-run_full_block_average()
-rs485_safe_close()
+
 return result
