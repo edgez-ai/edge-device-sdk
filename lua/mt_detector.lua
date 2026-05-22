@@ -475,7 +475,30 @@ end
 
 local function set_resolution()
 
+  local packet = string.char(0x56, 0x00, 0x31, 0x05, 0x05, 0x01, 0x00, 0x19, 0x33)
+  local ok, err = uart_reset_rx_cursor()
+  if not ok then
+    return false, "failed to reset rx cursor: " .. tostring(err)
+  end
+  ok, err = uart_write(packet)
+  if not ok then
+    return false, err
+  end
+
+  local response = read_response(2.0, 64)
+  if #response >= 5 then
+    local ack = response:sub(1, 5)
+    local expected = string.char(0x76, SERIAL_NUM, CMD_SET_DOWNSIZE, 0x01, 0x00)
+    if ack == expected then
+      return true
+    end
+  end
+
+  if #response >= 4 and verify_response(response, CMD_SET_DOWNSIZE) then
     return true
+  end
+
+  return false, "resolution command not acknowledged"
 
 end
 
