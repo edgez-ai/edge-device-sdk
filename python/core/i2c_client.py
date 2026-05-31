@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import base64
 import json
+import os
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Optional, Sequence
+from urllib.parse import urlparse
 
 import requests
+
+DEFAULT_TOKEN_ENDPOINT = "https://www.edgez.ai/api/v1/api-keys/access-token"
 
 # LwM2M object and resource IDs for the custom I2C interface object
 I2C_OBJECT_ID = 10251
@@ -38,18 +43,125 @@ I2C_RESOURCES: Dict[str, int] = {
 class RestConfig:
     base_url: str = "http://192.168.100.1:8088"
     timeout: float = 5.0
+    access_token: Optional[str] = None
+    api_key: Optional[str] = None
+    token_endpoint: Optional[str] = None
+    token_zone_name: Optional[str] = None
+
+    @staticmethod
+    def _infer_zone_name_from_base_url(base_url: str) -> Optional[str]:
+        raw = (base_url or "").strip()
+        if not raw:
+            return None
+        parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+        hostname = (parsed.hostname or "").strip().lower()
+        if not hostname:
+            return None
+        labels = [label for label in hostname.split(".") if label]
+        if len(labels) < 3:
+            return None
+        # Host format: {peerId}.{zoneName}.{domainSuffix}
+        return labels[1]
+
+    def __post_init__(self) -> None:
+        if not self.access_token:
+            self.access_token = os.getenv("EDGE_RELAY_ACCESS_TOKEN")
+        if not self.api_key:
+            self.api_key = os.getenv("IOT_DASHBOARD_API_KEY")
+        if not self.token_endpoint:
+            self.token_endpoint = os.getenv("IOT_DASHBOARD_TOKEN_ENDPOINT") or DEFAULT_TOKEN_ENDPOINT
+        if not self.token_zone_name:
+            self.token_zone_name = os.getenv("IOT_DASHBOARD_ZONE_NAME")
+        if not self.token_zone_name:
+            self.token_zone_name = self._infer_zone_name_from_base_url(self.base_url)
 
 
 class Lwm2mRestClient:
     def __init__(self, config: RestConfig) -> None:
         self.config = config
+        self._cached_access_token: Optional[str] = config.access_token
+        self._cached_access_token_exp_unix: Optional[int] = None
+        if self._cached_access_token:
+            self._cached_access_token_exp_unix = self._jwt_exp(self._cached_access_token)
 
     def _url(self, path: str) -> str:
         return f"{self.config.base_url.rstrip('/')}{path}"
 
+    def _auth_headers(self, headers: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+        combined: Dict[str, str] = dict(headers or {})
+        token = self._resolve_access_token()
+        if token:
+            combined["Authorization"] = f"Bearer {token}"
+        return combined
+
+    @staticmethod
+    def _jwt_exp(token: str) -> Optional[int]:
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None
+        payload = parts[1]
+        padding = "=" * (-len(payload) % 4)
+        try:
+            raw = base64.urlsafe_b64decode(payload + padding)
+            data = json.loads(raw.decode("utf-8"))
+        except Exception:
+            return None
+        exp = data.get("exp") if isinstance(data, dict) else None
+        return int(exp) if isinstance(exp, (int, float)) else None
+
+    def _exchange_api_key_for_access_token(self) -> Optional[str]:
+        api_key = (self.config.api_key or "").strip()
+        token_endpoint = (self.config.token_endpoint or "").strip()
+        zone_name = (self.config.token_zone_name or "").strip()
+        if not api_key or not token_endpoint:
+            return None
+        if not zone_name:
+            raise RuntimeError(
+                "Cannot infer zoneName from base_url. Expected host format {peerId}.{zoneName}.{domain}."
+            )
+
+        resp = requests.post(
+            token_endpoint,
+            json={"zoneName": zone_name},
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            timeout=self.config.timeout,
+        )
+        resp.raise_for_status()
+        payload = resp.json() if resp.content else {}
+        if not isinstance(payload, dict):
+            raise RuntimeError("Access token response is not a JSON object")
+        token = (
+            str(payload.get("relayToken") or "").strip()
+            or str(payload.get("accessToken") or "").strip()
+            or str(payload.get("token") or "").strip()
+        )
+        if not token:
+            raise RuntimeError("Access token response did not include relayToken/accessToken/token")
+        self._cached_access_token = token
+        self._cached_access_token_exp_unix = self._jwt_exp(token)
+        return token
+
+    def _resolve_access_token(self) -> Optional[str]:
+        now = int(time.time())
+        # Keep a small safety margin before expiry.
+        if (
+            self._cached_access_token
+            and (
+                self._cached_access_token_exp_unix is None
+                or self._cached_access_token_exp_unix > now + 60
+            )
+        ):
+            return self._cached_access_token
+
+        return self._exchange_api_key_for_access_token()
+
     def list_clients(self) -> Iterable[str]:
         url = self._url("/api/clients")
-        resp = requests.get(url, timeout=self.config.timeout)
+        resp = requests.get(url, headers=self._auth_headers(), timeout=self.config.timeout)
         resp.raise_for_status()
         data = resp.json()
         for item in data:
@@ -82,7 +194,7 @@ class Lwm2mRestClient:
 
     def read_resource(self, endpoint: str, obj: int, inst: int, res: int, *, headers: Optional[Dict[str, str]] = None) -> Any:
         url = self._url(f"/api/clients/{endpoint}/{obj}/{inst}/{res}")
-        resp = requests.get(url, headers=headers or {}, timeout=self.config.timeout)
+        resp = requests.get(url, headers=self._auth_headers(headers), timeout=self.config.timeout)
         resp.raise_for_status()
         ct = resp.headers.get("Content-Type", "")
         if "octet-stream" in ct:
@@ -98,14 +210,16 @@ class Lwm2mRestClient:
 
     def write_resource(self, endpoint: str, obj: int, inst: int, res: int, value: Any, is_bytes: bool = False) -> None:
         url = self._url(f"/api/clients/{endpoint}/{obj}/{inst}/{res}")
-        headers = {"Content-Type": "application/octet-stream" if is_bytes else "text/plain"}
+        headers = self._auth_headers(
+            {"Content-Type": "application/octet-stream" if is_bytes else "text/plain"}
+        )
         data = value if is_bytes else str(value)
         resp = requests.put(url, data=data, headers=headers, timeout=self.config.timeout)
         resp.raise_for_status()
 
     def execute(self, endpoint: str, obj: int, inst: int, res: int) -> None:
         url = self._url(f"/api/clients/{endpoint}/{obj}/{inst}/{res}")
-        resp = requests.post(url, timeout=self.config.timeout)
+        resp = requests.post(url, headers=self._auth_headers(), timeout=self.config.timeout)
         resp.raise_for_status()
 
     def read_i2c(self, endpoint: str, instance: int, resource_names: Iterable[str]) -> Dict[str, Any]:

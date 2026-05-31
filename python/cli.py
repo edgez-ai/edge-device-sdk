@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Optional, Sequence
@@ -23,6 +24,66 @@ from driver import FlowMeter, FlowMeterConfig, VC0706Camera, read_aht20, read_en
 from driver import ModbusTempHumidityConfig, ModbusTempHumiditySensor
 
 
+LOG_OBJECT_ID = 10260
+RES_LOG_LINES = 0
+
+
+class DeviceLogPoller:
+    def __init__(
+        self,
+        client: Lwm2mRestClient,
+        endpoint: str,
+        *,
+        instance: int = 0,
+        poll_interval: float = 0.3,
+    ):
+        self.client = client
+        self.endpoint = endpoint
+        self.instance = instance
+        self.poll_interval = poll_interval
+        self._running = False
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> None:
+        if self._running:
+            return
+        self._running = True
+        self._thread = threading.Thread(target=self._poll_loop, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._running = False
+        if self._thread:
+            self._thread.join(timeout=2.0)
+            self._thread = None
+
+    def _poll_loop(self) -> None:
+        while self._running:
+            try:
+                self._fetch_and_print_logs()
+            except Exception:
+                pass
+            time.sleep(self.poll_interval)
+
+    def _fetch_and_print_logs(self) -> None:
+        data = self.client.read_resource(self.endpoint, LOG_OBJECT_ID, self.instance, RES_LOG_LINES)
+        if not data:
+            return
+
+        log_text: Optional[str] = None
+        if isinstance(data, bytes):
+            log_text = data.decode("utf-8", errors="replace")
+        elif isinstance(data, str):
+            log_text = data
+        elif isinstance(data, dict):
+            log_text = data.get("value") or data.get("vd") or str(data)
+
+        if log_text and log_text.strip():
+            for line in log_text.strip().split("\n"):
+                if line.strip():
+                    print(f"[device-log] {line}", flush=True)
+
+
 def parse_byte_list(text: str) -> Sequence[int]:
     parts = [p.strip() for p in text.split(",") if p.strip()]
     return [int(part, 0) for part in parts]
@@ -33,10 +94,27 @@ def parse_byte_list(text: str) -> Sequence[int]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Drive I2C via LwM2M REST gateway")
     parser.add_argument("--base-url", default="http://192.168.100.1:8088", help="REST gateway base URL")
+    parser.add_argument(
+        "--access-token",
+        default="",
+        help="Bearer token for edge-relay (added as Authorization header)",
+    )
+    parser.add_argument(
+        "--api-key",
+        default="",
+        help="iot-dashboard API key (used to exchange for relay token)",
+    )
+    parser.add_argument(
+        "--token-endpoint",
+        default="",
+        help="iot-dashboard access token endpoint (default: https://www.edgez.ai/api/v1/api-keys/access-token)",
+    )
     parser.add_argument("--client", help="LwM2M endpoint name; defaults to the only registered client")
     parser.add_argument("--instance", type=int, default=0, help="I2C object instance id")
     parser.add_argument("--timeout", type=float, default=5.0, help="HTTP timeout in seconds")
     parser.add_argument("--verbose", action="store_true", help="Ignored; kept for backward compatibility")
+    parser.add_argument("--poll-logs", action="store_true", help="Poll device logs in background while command runs")
+    parser.add_argument("--log-interval", type=float, default=0.3, help="Device log poll interval in seconds")
 
     mode = parser.add_subparsers(dest="mode", required=False)
 
@@ -562,40 +640,102 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     if not getattr(args, "mode", None):
         parser.print_help()
         return
-    config = RestConfig(base_url=args.base_url, timeout=args.timeout)
+    config = RestConfig(
+        base_url=args.base_url,
+        timeout=args.timeout,
+        access_token=(args.access_token or "").strip() or None,
+        api_key=(args.api_key or "").strip() or None,
+        token_endpoint=(args.token_endpoint or "").strip() or None,
+    )
     client = Lwm2mRestClient(config)
     endpoint = pick_client(client, args.client)
     session = I2CSession(client, endpoint, args.instance)
+    log_poller: Optional[DeviceLogPoller] = None
+    try:
+        if getattr(args, "poll_logs", False):
+            log_poller = DeviceLogPoller(
+                client=client,
+                endpoint=endpoint,
+                poll_interval=max(0.05, float(getattr(args, "log_interval", 0.3))),
+            )
+            log_poller.start()
 
-    if args.mode == "raw":
-        run_raw(args, session, client, endpoint)
-    elif args.mode == "sht3x":
-        run_sht3x(args, session, endpoint)
-    elif args.mode == "aht20":
-        run_aht20(args, session, endpoint)
-    elif args.mode == "ens210":
-        run_ens210(args, session, endpoint)
-    elif args.mode == "mpu6050":
-        run_mpu6050(args, session, endpoint)
-    elif args.mode == "vc0706":
-        iface = getattr(args, "iface", "uart")
-        if iface == "rs485":
-            uart_session = UartSession(
-                client,
-                endpoint,
-                args.instance,
-                object_id=RS485_OBJECT_ID,
-                resources=RS485_RESOURCES,
-            )
-        elif iface == "i2c":
-            uart_session = UartSession(
-                client,
-                endpoint,
-                args.instance,
-                object_id=I2C_OBJECT_ID,
-                resources=I2C_RESOURCES,
-            )
-        else:
+        if args.mode == "raw":
+            run_raw(args, session, client, endpoint)
+        elif args.mode == "sht3x":
+            run_sht3x(args, session, endpoint)
+        elif args.mode == "aht20":
+            run_aht20(args, session, endpoint)
+        elif args.mode == "ens210":
+            run_ens210(args, session, endpoint)
+        elif args.mode == "mpu6050":
+            run_mpu6050(args, session, endpoint)
+        elif args.mode == "vc0706":
+            iface = getattr(args, "iface", "uart")
+            if iface == "rs485":
+                uart_session = UartSession(
+                    client,
+                    endpoint,
+                    args.instance,
+                    object_id=RS485_OBJECT_ID,
+                    resources=RS485_RESOURCES,
+                )
+            elif iface == "i2c":
+                uart_session = UartSession(
+                    client,
+                    endpoint,
+                    args.instance,
+                    object_id=I2C_OBJECT_ID,
+                    resources=I2C_RESOURCES,
+                )
+            else:
+                uart_session = UartSession(
+                    client,
+                    endpoint,
+                    args.instance,
+                    object_id=UART_OBJECT_ID,
+                    resources=UART_RESOURCES,
+                )
+            run_vc0706(args, uart_session, endpoint)
+        elif args.mode == "flow":
+            iface = getattr(args, "iface", "rs485")
+            if iface == "uart":
+                uart_session = UartSession(
+                    client,
+                    endpoint,
+                    args.instance,
+                    object_id=UART_OBJECT_ID,
+                    resources=UART_RESOURCES,
+                )
+            else:
+                uart_session = UartSession(
+                    client,
+                    endpoint,
+                    args.instance,
+                    object_id=RS485_OBJECT_ID,
+                    resources=RS485_RESOURCES,
+                )
+            run_flow(args, uart_session, endpoint)
+        elif args.mode == "modbus-th":
+            iface = getattr(args, "iface", "rs485")
+            if iface == "uart":
+                uart_session = UartSession(
+                    client,
+                    endpoint,
+                    args.instance,
+                    object_id=UART_OBJECT_ID,
+                    resources=UART_RESOURCES,
+                )
+            else:
+                uart_session = UartSession(
+                    client,
+                    endpoint,
+                    args.instance,
+                    object_id=RS485_OBJECT_ID,
+                    resources=RS485_RESOURCES,
+                )
+            run_modbus_th(args, uart_session, endpoint)
+        elif args.mode == "uart-listen":
             uart_session = UartSession(
                 client,
                 endpoint,
@@ -603,10 +743,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 object_id=UART_OBJECT_ID,
                 resources=UART_RESOURCES,
             )
-        run_vc0706(args, uart_session, endpoint)
-    elif args.mode == "flow":
-        iface = getattr(args, "iface", "rs485")
-        if iface == "uart":
+            run_uart_listen(args, uart_session, endpoint)
+        elif args.mode == "uart-send":
             uart_session = UartSession(
                 client,
                 endpoint,
@@ -614,54 +752,12 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 object_id=UART_OBJECT_ID,
                 resources=UART_RESOURCES,
             )
+            run_uart_send(args, uart_session, endpoint)
         else:
-            uart_session = UartSession(
-                client,
-                endpoint,
-                args.instance,
-                object_id=RS485_OBJECT_ID,
-                resources=RS485_RESOURCES,
-            )
-        run_flow(args, uart_session, endpoint)
-    elif args.mode == "modbus-th":
-        iface = getattr(args, "iface", "rs485")
-        if iface == "uart":
-            uart_session = UartSession(
-                client,
-                endpoint,
-                args.instance,
-                object_id=UART_OBJECT_ID,
-                resources=UART_RESOURCES,
-            )
-        else:
-            uart_session = UartSession(
-                client,
-                endpoint,
-                args.instance,
-                object_id=RS485_OBJECT_ID,
-                resources=RS485_RESOURCES,
-            )
-        run_modbus_th(args, uart_session, endpoint)
-    elif args.mode == "uart-listen":
-        uart_session = UartSession(
-            client,
-            endpoint,
-            args.instance,
-            object_id=UART_OBJECT_ID,
-            resources=UART_RESOURCES,
-        )
-        run_uart_listen(args, uart_session, endpoint)
-    elif args.mode == "uart-send":
-        uart_session = UartSession(
-            client,
-            endpoint,
-            args.instance,
-            object_id=UART_OBJECT_ID,
-            resources=UART_RESOURCES,
-        )
-        run_uart_send(args, uart_session, endpoint)
-    else:
-        raise RuntimeError(f"Unsupported mode: {args.mode}")
+            raise RuntimeError(f"Unsupported mode: {args.mode}")
+    finally:
+        if log_poller is not None:
+            log_poller.stop()
 
 
 if __name__ == "__main__":

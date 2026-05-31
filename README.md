@@ -183,3 +183,8 @@ python3 cli.py --client B43A45A45A08 --base-url http://192.168.10.177:8088   ens
  
 
  python3 cli.py --base-url https://12d3koowq7bep4gquw19awbudgsbddha75jfj5tfsbgetbstsegw.demos.edgez.biz --client B43A45A459C8 modbus-th --baud 9600 --unit-id 1 --address 0 --count 1 --function-code 3 --temp-scale 10 --count-limit 1
+
+
+ go run . -addr /ip4/65.20.115.199/tcp/4001/p2p/12D3KooWSMXRqi2rd7p4UPErgVS6zFeYpYuddo8qayYxkSR2WT7Q/p2p-circuit/p2p/12D3KooWSmgDLWtyCbEEua1iBoRbT3YZK8Apqsh8oh8aZBqEeQf4
+
+ python3 cli.py --client jason-testabc --base-url https://12d3koowsmxrqi2rd7p4upergvs6zfeypyuddo8qayyxksr2wt7q.jason.edgez.biz/ --api-key xxxx
